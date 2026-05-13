@@ -123,68 +123,78 @@ export async function runSetup(
 └─────────────────────────────────────────┘
 `);
 
-  // 3. Try lark-cli automated flow
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   try {
-    const useLarkCli = await prompt(
-      rl,
-      "Use lark-cli to auto-create a Feishu app? (recommended) [Y/n]: ",
-    );
+    // 3. Ask: existing bot or create new?
+    console.log(`Do you already have a Feishu self-built app (bot)?`);
+    console.log(`  [1] Yes — I have an existing app, let me enter the credentials`);
+    console.log(`  [2] No  — Create a new app automatically via lark-cli (recommended)\n`);
+    const choice = await prompt(rl, "Choice [1/2]: ");
 
-    if (useLarkCli.toLowerCase() !== "n") {
-      const success = await runLarkCliSetup(log);
+    if (choice === "1") {
+      // ── Existing bot: just ask for App ID + Secret ──────────────────────
+      console.log(`\nFind your credentials at https://open.feishu.cn/app → your app → Credentials & Basic Info\n`);
+      const appId     = await prompt(rl, "App ID:     ");
+      const appSecret = await prompt(rl, "App Secret: ");
 
-      if (success) {
-        // lark-cli stores the secret in the system keychain — we need to ask for it.
-        // Extract the App ID from `lark-cli config show` so the user doesn't have to type it.
-        const appId = await extractAppIdFromLarkCli();
-        if (appId) {
-          log(`\n✓ App created! App ID: ${appId}`);
-          log("lark-cli stores the App Secret in your system keychain.");
-          log("Please paste your App Secret below (visible in the Feishu Open Platform under your app's Credentials tab):\n");
-          const appSecret = await prompt(rl, "App Secret: ");
-          if (appSecret) {
-            const creds = { appId, appSecret };
-            // Write ~/.lark-channel/config.json so lark-cli can also read it
-            const larkChannelDir = path.join(os.homedir(), ".lark-channel");
-            fs.mkdirSync(larkChannelDir, { recursive: true });
-            fs.writeFileSync(
-              path.join(larkChannelDir, "config.json"),
-              JSON.stringify({ accounts: { app: { id: appId, secret: appSecret, tenant: "feishu" } } }, null, 2),
-              "utf-8",
-            );
-            saveConfig(storageDir, { feishu: creds });
-            log(`\n✓ Setup complete! Config saved.`);
-            await printBotLink(appId, appSecret, log);
-            return creds;
-          }
-        }
-        log("⚠ Could not read App ID from lark-cli — falling back to manual entry.");
-      } else {
-        log("⚠ lark-cli setup failed — falling back to manual entry.");
-      }
+      if (!appId || !appSecret) throw new Error("App ID and App Secret are required");
+
+      await saveCreds(storageDir, appId, appSecret);
+      log(`\n✓ Config saved!`);
+      await printBotLink(appId, appSecret, log);
+      return { appId, appSecret };
     }
 
-    // 4. Manual fallback
-    console.log(`
-Manual setup:
-  1. Go to https://open.feishu.cn/app → Create self-built app
-  2. Add Bot capability
-  3. Add permissions: im:message, im:message:send_as_bot
-  4. Subscribe event: im.message.receive_v1  (use long connection)
-  5. Publish the app
-`);
-    const appId = await prompt(rl, "App ID: ");
+    // ── Create new bot via lark-cli ──────────────────────────────────────
+    const success = await runLarkCliSetup(log);
+
+    if (success) {
+      const appId = await extractAppIdFromLarkCli();
+      if (appId) {
+        log(`\n✓ App created! App ID: ${appId}`);
+        log(`\nPaste your App Secret (Feishu Open Platform → your app → Credentials & Basic Info):\n`);
+        const appSecret = await prompt(rl, "App Secret: ");
+        if (appSecret) {
+          await saveCreds(storageDir, appId, appSecret);
+          log(`\n✓ Setup complete!`);
+          await printBotLink(appId, appSecret, log);
+          return { appId, appSecret };
+        }
+      }
+      log("⚠ Could not read App ID from lark-cli — please enter manually.");
+    } else {
+      log("⚠ lark-cli setup failed — please enter manually.");
+    }
+
+    // ── Fallback: manual entry ───────────────────────────────────────────
+    console.log(`\nManual setup — make sure your app has:`);
+    console.log(`  • Bot capability enabled`);
+    console.log(`  • Permissions: im:message, im:message:send_as_bot`);
+    console.log(`  • Event subscription: im.message.receive_v1 (long connection)\n`);
+    const appId     = await prompt(rl, "App ID:     ");
     const appSecret = await prompt(rl, "App Secret: ");
 
     if (!appId || !appSecret) throw new Error("App ID and App Secret are required");
 
-    saveConfig(storageDir, { feishu: { appId, appSecret } });
-    log(`\n✓ Config saved to ${storageDir}/config.json`);
+    await saveCreds(storageDir, appId, appSecret);
+    log(`\n✓ Config saved!`);
     await printBotLink(appId, appSecret, log);
     return { appId, appSecret };
   } finally {
     rl.close();
   }
+}
+
+function saveCreds(storageDir: string, appId: string, appSecret: string): void {
+  // Write ~/.lark-channel/config.json (lark-cli compatible format)
+  const larkChannelDir = path.join(os.homedir(), ".lark-channel");
+  fs.mkdirSync(larkChannelDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(larkChannelDir, "config.json"),
+    JSON.stringify({ accounts: { app: { id: appId, secret: appSecret, tenant: "feishu" } } }, null, 2),
+    "utf-8",
+  );
+  // Write ~/.feishu-acp/config.json
+  saveConfig(storageDir, { feishu: { appId, appSecret } });
 }
