@@ -37,13 +37,13 @@ First run opens an interactive setup to create or connect your Feishu bot.
 | `opencode` | OpenCode |
 
 ```bash
-npx lark-acp agents   # list all presets
+npx feishu-acp agents   # list all presets
 ```
 
 Custom command also works:
 
 ```bash
-npx lark-acp --agent "npx my-agent --acp"
+npx feishu-acp --agent "npx my-agent --acp"
 ```
 
 ## Options
@@ -65,7 +65,7 @@ First run handles this automatically via `lark-cli` browser OAuth. To set up man
 2. Enable **Bot** capability
 3. Add permissions: `im:message`, `im:message:send_as_bot`, `im:message.react:create`
 4. Subscribe to event `im.message.receive_v1` using **long connection** mode
-5. Run `npx lark-acp setup` → choose "existing app"
+5. Run `npx feishu-acp setup` → choose "existing app"
 
 Credentials are saved to `~/.lark-channel/config.json` and auto-loaded on next run.
 
