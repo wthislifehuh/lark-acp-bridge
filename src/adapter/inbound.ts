@@ -101,7 +101,10 @@ function parseText(raw: string, mentions?: FeishuMention[]): acp.ContentBlock[] 
 
   if (mentions) {
     for (const m of mentions) {
-      text = text.replace(new RegExp(`@_user_\\d+`, "g"), "").trim();
+      // Replace @_user_N with @{name} instead of deleting it
+      const key = m.key ?? `@_user_`;
+      const name = m.name ?? m.id?.open_id ?? key;
+      text = text.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), `@{${name}}`);
     }
   }
   text = text.trim();

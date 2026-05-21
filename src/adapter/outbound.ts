@@ -9,19 +9,37 @@
 
 const MAX_MESSAGE_LENGTH = 4000;
 
-/** Sentinel regex: detects markdown table rows (starts/ends with |, has separator row) */
 const TABLE_SEPARATOR = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+/** Bare code fence — a line that is exactly ``` with optional trailing whitespace. */
+const BARE_FENCE = /^```\s*$/;
 
 export function formatForFeishu(text: string): string {
   let out = text.trim();
 
-  // Fix code blocks: add `text` language to bare ``` blocks
-  out = out.replace(/^```\s*$/gm, "```text");
+  // Fix bare code blocks: add `text` language to opening fences only
+  out = fixBareFences(out);
 
   // Wrap markdown tables in ```text code blocks
   out = wrapTables(out);
 
   return out;
+}
+
+/** Add `text` language to bare ``` opening fences; leave closing fences alone. */
+function fixBareFences(md: string): string {
+  const lines = md.split("\n");
+  let inCodeBlock = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!BARE_FENCE.test(lines[i])) continue;
+    if (inCodeBlock) {
+      inCodeBlock = false;
+    } else {
+      inCodeBlock = true;
+      lines[i] = "```text";
+    }
+  }
+  return lines.join("\n");
 }
 
 function wrapTables(text: string): string {
