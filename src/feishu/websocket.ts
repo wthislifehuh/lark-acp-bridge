@@ -11,6 +11,7 @@ export interface FeishuWsOpts {
   appSecret: string;
   onMessage: (event: FeishuMessageEvent) => void;
   onCardAction: (event: Lark.CardActionEvent) => void;
+  onBotMenu: (event: { eventKey: string; openId: string }) => void;
   log: (msg: string) => void;
 }
 
@@ -53,6 +54,16 @@ export class FeishuWsConnection {
           this.opts.log(`[ws] error handling card action: ${String(err)}`);
         }
         return { toast: { type: "success", content: "已确认" } };
+      },
+      "application.bot.menu_v6": async (data: {
+        event_key?: string;
+        operator?: { operator_id?: { open_id?: string } };
+      }) => {
+        const eventKey = data.event_key;
+        const openId = data.operator?.operator_id?.open_id;
+        if (eventKey && openId) {
+          this.opts.onBotMenu({ eventKey, openId });
+        }
       },
     });
 
