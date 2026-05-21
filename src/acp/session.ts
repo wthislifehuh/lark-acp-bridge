@@ -120,6 +120,18 @@ export class SessionManager {
     session.queue.length = 0;
   }
 
+  /** Kill the current session for a chat, so the next message creates a new one. */
+  restartSession(chatId: string): void {
+    const session = this.sessions.get(chatId);
+    if (!session) return;
+
+    this.opts.log(`[${chatId}] Restarting session`);
+
+    session.client.cancelPendingPermission();
+    killAgent(session.agentInfo.process);
+    this.sessions.delete(chatId);
+  }
+
   handleCardAction(chatId: string, requestId: string, optionId: string): boolean {
     const session = this.sessions.get(chatId);
     if (!session) return false;

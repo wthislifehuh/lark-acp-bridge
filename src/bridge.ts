@@ -16,6 +16,7 @@ import type { FeishuAcpConfig } from "./config.js";
 import type { StorageBackend } from "./storage/types.js";
 
 const CANCEL_COMMANDS = new Set(["/cancel", "取消", "/stop", "停止"]);
+const NEW_SESSION_COMMANDS = new Set(["/new", "/restart"]);
 
 export class FeishuAcpBridge {
   private config: FeishuAcpConfig;
@@ -126,6 +127,13 @@ export class FeishuAcpBridge {
         this.sessionManager?.cancelSession(chatId)
           .then(() => this.feishuClient.replyText(messageId, "已取消当前任务"))
           .catch((err) => this.log(`Cancel error: ${String(err)}`));
+        return;
+      }
+      if (NEW_SESSION_COMMANDS.has(text)) {
+        this.log(`New session command for chat ${chatId}`);
+        this.sessionManager?.restartSession(chatId);
+        this.feishuClient.replyText(messageId, "已创建新会话，下次消息将重新启动 agent")
+          .catch(() => {});
         return;
       }
     }
