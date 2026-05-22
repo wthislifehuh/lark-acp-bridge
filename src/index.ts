@@ -21,7 +21,13 @@ export type {
 export type { LarkLogger } from "./logger/logger.js";
 export { createPinoLogger } from "./logger/logger.js";
 
-export type { LarkPresenter, ToolItem } from "./presenter/presenter.js";
+export type {
+  AgentStatus,
+  LarkPresenter,
+  TimelineEntry,
+  ToolStatus,
+  UnifiedCardState,
+} from "./presenter/presenter.js";
 export { LarkCardPresenter } from "./presenter/lark-presenter.js";
 export type { LarkCardPresenterOptions } from "./presenter/lark-presenter.js";
 

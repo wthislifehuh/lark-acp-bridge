@@ -1,6 +1,6 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
-import type { LarkPresenter } from "../presenter/presenter.js";
+import type { AgentStatus, LarkPresenter } from "../presenter/presenter.js";
 import { LarkAcpClient } from "../acp/lark-acp-client.js";
 import {
   spawnAgent,
@@ -24,6 +24,8 @@ export interface ChatRuntimeOptions {
   agentCwd: string;
   agentEnv?: Record<string, string>;
   showThoughts: boolean;
+  showTools: boolean;
+  showCancelButton: boolean;
   permissionTimeoutMs: number;
   presenter: LarkPresenter;
   sessionStore: SessionStore;
@@ -130,6 +132,8 @@ export class ChatRuntime {
       presenter: this.opts.presenter,
       logger: this.logger,
       showThoughts: this.opts.showThoughts,
+      showTools: this.opts.showTools,
+      showCancelButton: this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
       callbacks: {
         onTyping: () =>
@@ -180,7 +184,6 @@ export class ChatRuntime {
             this.opts.presenter.addReaction(pending.messageId).then(() => {}),
         });
 
-        await state.client.flush();
         state.client.setContext(pending.messageId, pending.chatId);
 
         try {
@@ -199,27 +202,22 @@ export class ChatRuntime {
     const reactionId = await this.opts.presenter.addReaction(pending.messageId).catch(() => null);
     this.logger.info("sending prompt to agent");
 
-    const result = await state.agent.connection.prompt({
-      sessionId: state.agent.sessionId,
-      prompt: pending.prompt,
-    });
-
-    if (reactionId) {
-      this.opts.presenter
-        .removeReaction(pending.messageId, reactionId)
-        .catch((err) => this.logger.debug({ err }, "removeReaction failed"));
+    let result: Awaited<ReturnType<typeof state.agent.connection.prompt>>;
+    try {
+      result = await state.agent.connection.prompt({
+        sessionId: state.agent.sessionId,
+        prompt: pending.prompt,
+      });
+    } finally {
+      if (reactionId) {
+        this.opts.presenter
+          .removeReaction(pending.messageId, reactionId)
+          .catch((err) => this.logger.debug({ err }, "removeReaction failed"));
+      }
     }
 
-    let reply = await state.client.flush();
-    if (result.stopReason === "cancelled") reply += "\n[cancelled]";
-    else if (result.stopReason === "refusal") reply += "\n[agent refused]";
-
-    this.logger.info({ stopReason: result.stopReason, replyLen: reply.length }, "prompt done");
-
-    if (reply.trim()) {
-      await this.opts.presenter.replyText(pending.messageId, reply);
-    }
-
+    this.logger.info({ stopReason: result.stopReason }, "prompt done");
+    await state.client.finalize(stopReasonToStatus(result.stopReason));
     await this.persistSession(state.agent.sessionId);
   }
 
@@ -232,6 +230,13 @@ export class ChatRuntime {
     const isAuthError = isAuthenticationError(err);
     const procDead =
       state.agent.process.killed || state.agent.process.exitCode !== null;
+
+    // Always finalize the unified card as failed so the in-progress state
+    // doesn't get stuck. Best-effort — if presenter rejects we still surface
+    // the error via replyText below.
+    await state.client.finalize("failed").catch((finalErr) =>
+      this.logger.debug({ err: finalErr }, "finalize after error rejected"),
+    );
 
     if (isAuthError || procDead) {
       this.shutdown();
@@ -266,6 +271,21 @@ export class ChatRuntime {
     } catch (err) {
       this.logger.warn({ err }, "session store save failed");
     }
+  }
+}
+
+function stopReasonToStatus(reason: acp.StopReason): AgentStatus {
+  switch (reason) {
+    case "cancelled":
+      return "cancelled";
+    case "refusal":
+      return "failed";
+    case "end_turn":
+    case "max_tokens":
+    case "max_turn_requests":
+      return "complete";
+    default:
+      return "complete";
   }
 }
 

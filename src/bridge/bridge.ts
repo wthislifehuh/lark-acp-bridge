@@ -14,6 +14,8 @@ const NEW_SESSION_COMMANDS = new Set(["/new", "/restart"]);
 const DEFAULT_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 const DEFAULT_MAX_CONCURRENT_CHATS = 10;
 const DEFAULT_SHOW_THOUGHTS = true;
+const DEFAULT_SHOW_TOOLS = true;
+const DEFAULT_SHOW_CANCEL_BUTTON = true;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const IDLE_CLEANUP_INTERVAL_MS = 2 * 60_000;
 
@@ -26,18 +28,20 @@ const REPLY_CANCELLED = "已取消当前任务";
 const REPLY_RESTARTED = "已创建新会话，下次消息将重新启动 agent";
 
 interface CardActionPayload {
-  /** Permission request id. */
+  /** Permission request id (set on permission cards). */
   r?: string;
-  /** Selected option id. */
+  /** Selected option id (set on permission cards). */
   o?: string;
-  /** Option display name. */
+  /** Option display name (set on permission cards). */
   n?: string;
-  /** Tool kind. */
+  /** Tool kind (set on permission cards). */
   k?: string;
-  /** Tool title. */
+  /** Tool title (set on permission cards). */
   t?: string;
-  /** Chat id. */
+  /** Chat id — present on every card the bridge produces. */
   c?: string;
+  /** Set on the unified card's "cancel current task" button. */
+  cancel?: boolean;
 }
 
 export interface LarkBridgeFeishuOptions {
@@ -52,8 +56,16 @@ export interface LarkBridgeAgentOptions {
   env?: Record<string, string>;
   /** Optional preset id, used purely for logging context. */
   preset?: string;
-  /** Forward `agent_thought_chunk` updates as a thinking card. Default `true`. */
+  /** Include `agent_thought_chunk` content in the unified card. Default `true`. */
   showThoughts?: boolean;
+  /** Include `tool_call` / `tool_call_update` events in the unified card. Default `true`. */
+  showTools?: boolean;
+  /**
+   * Render the "中断当前任务" button at the bottom of the running unified
+   * card. When `false`, users can still cancel via `/cancel` chat command
+   * but the in-card button is hidden. Default `true`.
+   */
+  showCancelButton?: boolean;
   /**
    * Auto-cancel a permission request if the user doesn't respond within
    * this many ms (0 = wait forever). Default 5 minutes.
@@ -137,6 +149,8 @@ export class LarkBridge {
       env: opts.agent.env,
       preset: opts.agent.preset,
       showThoughts: opts.agent.showThoughts ?? DEFAULT_SHOW_THOUGHTS,
+      showTools: opts.agent.showTools ?? DEFAULT_SHOW_TOOLS,
+      showCancelButton: opts.agent.showCancelButton ?? DEFAULT_SHOW_CANCEL_BUTTON,
       permissionTimeoutMs: opts.agent.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS,
     };
 
@@ -313,6 +327,8 @@ export class LarkBridge {
       agentCwd: this.agentOpts.cwd,
       agentEnv: this.agentOpts.env,
       showThoughts: this.agentOpts.showThoughts,
+      showTools: this.agentOpts.showTools,
+      showCancelButton: this.agentOpts.showCancelButton,
       permissionTimeoutMs: this.agentOpts.permissionTimeoutMs,
       presenter: this.presenter,
       sessionStore: this.sessionStore,
@@ -324,14 +340,44 @@ export class LarkBridge {
 
   private handleCardAction(event: Lark.CardActionEvent): void {
     const value = event.action.value as CardActionPayload | undefined;
-    if (!value?.r || !value?.o || !value?.c) return;
+    if (!value?.c) return;
 
-    const runtime = this.chats.get(value.c);
-    const handled = runtime?.handleCardAction(value.r, value.o) ?? false;
+    if (value.cancel === true) {
+      this.handleCancelButton(value.c);
+      return;
+    }
+
+    if (!value.r || !value.o) return;
+    this.handlePermissionCardAction(event, value.c, value.r, value.o, value.n, value.k, value.t);
+  }
+
+  private handleCancelButton(chatId: string): void {
+    const runtime = this.chats.get(chatId);
+    if (!runtime) {
+      this.logger.info({ chatId }, "cancel button clicked but no active runtime");
+      return;
+    }
+    this.logger.info({ chatId }, "cancel button clicked");
+    runtime
+      .cancel()
+      .catch((err) => this.logger.warn({ err, chatId }, "cancel via card button failed"));
+  }
+
+  private handlePermissionCardAction(
+    event: Lark.CardActionEvent,
+    chatId: string,
+    requestId: string,
+    optionId: string,
+    optionName: string | undefined,
+    toolKind: string | undefined,
+    toolTitle: string | undefined,
+  ): void {
+    const runtime = this.chats.get(chatId);
+    const handled = runtime?.handleCardAction(requestId, optionId) ?? false;
     const messageId = event.messageId;
 
     if (!handled) {
-      this.logger.info({ chatId: value.c, requestId: value.r }, "orphan card action — patching as expired");
+      this.logger.info({ chatId, requestId }, "orphan card action — patching as expired");
       if (messageId) {
         this.presenter
           .expirePermissionCard(messageId, ORPHAN_CARD_REASON)
@@ -340,11 +386,11 @@ export class LarkBridge {
       return;
     }
 
-    this.logger.info({ chatId: value.c, optionId: value.o }, "card action resolved");
+    this.logger.info({ chatId, optionId }, "card action resolved");
 
-    if (messageId && value.n && value.k && value.t) {
+    if (messageId && optionName && toolKind && toolTitle) {
       this.presenter
-        .updatePermissionCard(messageId, value.k, value.t, value.n)
+        .updatePermissionCard(messageId, toolKind, toolTitle, optionName)
         .catch((err) => this.logger.warn({ err }, "updatePermissionCard failed"));
     }
   }

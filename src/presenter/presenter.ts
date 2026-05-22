@@ -1,51 +1,74 @@
 import type * as acp from "@agentclientprotocol/sdk";
 
-/** A single tool call as rendered in the activity card. */
-export interface ToolItem {
-  title: string;
-  kind: string;
-  status: "pending" | "in_progress" | "completed" | "failed";
-  detail?: string;
+/** Status chip rendered in the unified card header. */
+export type AgentStatus =
+  | "thinking"
+  | "calling_tool"
+  | "responding"
+  | "complete"
+  | "cancelled"
+  | "failed";
+
+/** Tool execution status — mirrors ACP's `tool_call` lifecycle. */
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/**
+ * One entry in the unified card timeline. Entries appear in agent-emit
+ * order; consecutive text / thought entries are coalesced upstream.
+ */
+export type TimelineEntry =
+  | { readonly kind: "text"; text: string }
+  | { readonly kind: "thought"; text: string }
+  | {
+      readonly kind: "tool";
+      readonly toolCallId: string;
+      title: string;
+      toolKind: string;
+      status: ToolStatus;
+      detail?: string;
+    };
+
+/** Snapshot the presenter renders into a single Lark interactive card. */
+export interface UnifiedCardState {
+  status: AgentStatus;
+  entries: readonly TimelineEntry[];
+  /** Show the bottom "cancel" button. Typically true while the agent is
+   *  still working. */
+  cancellable: boolean;
+  /** Chat id — embedded in the cancel button's action payload so the
+   *  bridge can route the click back to the right runtime. */
+  chatId: string;
 }
 
 /**
  * Surface the bridge uses to render itself to the user — every visible
- * artefact (replies, reactions, permission cards, thinking card, activity
- * card) goes through this interface.
+ * artefact (replies, reactions, permission cards, unified timeline card)
+ * goes through this interface.
  *
- * Default implementation is `LarkCardPresenter` (Lark / Feishu interactive
- * cards). Replace for testing (record-only presenter), plain-text mode,
- * or other chat platforms in the future.
+ * Default implementation is {@link LarkCardPresenter}. Replace for
+ * testing, plain-text mode, or other chat platforms.
  */
 export interface LarkPresenter {
   /**
-   * Reply to `messageId` with plain-ish text. The presenter is free to wrap
-   * it in whatever container the underlying platform needs (e.g. a markdown
-   * card).
+   * Reply to `messageId` with plain-ish text (rendered as a Lark `post`
+   * rich-text message). Used for system notices — agent output is
+   * rendered into the unified card instead.
    *
    * @throws when the underlying transport rejects.
    */
   replyText(messageId: string, text: string): Promise<void>;
 
-  /**
-   * Add a "typing" / "thinking" indicator. Returns an opaque id that must
-   * be passed back to {@link removeReaction}, or `null` if the indicator
-   * could not be created.
-   */
+  /** Add a "typing" indicator. Returns an opaque id (or null on failure). */
   addReaction(messageId: string, emoji?: string): Promise<string | null>;
 
   /** Remove a previously-added reaction. Best-effort. */
   removeReaction(messageId: string, reactionId: string): Promise<void>;
 
   /**
-   * Render an ACP permission request as an interactive prompt the user can
-   * resolve. The presenter must encode `requestId` and `chatId` into the
-   * action payload so the bridge can match the user's response back to the
-   * pending request.
+   * Render an ACP permission request as an interactive card.
    *
-   * Returns the new card's id so callers can later patch it (e.g. on
-   * timeout). Returns `null` if the underlying transport did not surface
-   * one.
+   * Returns the new card's id so callers can later patch it. Returns
+   * `null` if the transport did not surface one.
    *
    * @throws when the underlying transport rejects.
    */
@@ -56,7 +79,7 @@ export interface LarkPresenter {
     chatId: string,
   ): Promise<string | null>;
 
-  /** Replace a previously-sent permission card with a "resolved" confirmation. */
+  /** Replace a permission card with a "resolved" confirmation. */
   updatePermissionCard(
     messageId: string,
     toolKind: string,
@@ -64,20 +87,15 @@ export interface LarkPresenter {
     selectedName: string,
   ): Promise<void>;
 
-  /**
-   * Replace a previously-sent permission card with a "no longer actionable"
-   * notice (timeout, session ended, etc.). Best-effort.
-   */
+  /** Replace a permission card with a "no longer actionable" notice. */
   expirePermissionCard(messageId: string, reason: string): Promise<void>;
 
-  /** Create a "thinking" card in reply to `replyToMessageId`. Returns the
-   *  new card's id (used by {@link updateThinkingCard}), or `null` on failure. */
-  sendThinkingCard(replyToMessageId: string): Promise<string | null>;
+  /**
+   * Send the per-prompt unified card. Returns the card's message id so
+   * the caller can patch it as the timeline grows.
+   */
+  sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null>;
 
-  updateThinkingCard(cardMessageId: string, thoughtText: string, isDone: boolean): Promise<void>;
-
-  /** Create the activity / tool-list card. Returns the new card's id. */
-  sendActivityCard(replyToMessageId: string, items: ToolItem[]): Promise<string | null>;
-
-  updateActivityCard(cardMessageId: string, items: ToolItem[]): Promise<void>;
+  /** Patch an existing unified card with a new state. */
+  updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void>;
 }

@@ -2,25 +2,35 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
 import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
-import type { LarkPresenter, ToolItem } from "./presenter.js";
+import type {
+  AgentStatus,
+  LarkPresenter,
+  TimelineEntry,
+  ToolStatus,
+  UnifiedCardState,
+} from "./presenter.js";
 
-const STATUS_MARKS: Record<ToolItem["status"], string> = {
-  pending: "- [ ]",
-  in_progress: "[⏳]",
-  completed: "[✅]",
-  failed: "[❌]",
+const STATUS_MARKS: Record<ToolStatus, string> = {
+  pending: "⏸",
+  in_progress: "⏳",
+  completed: "✅",
+  failed: "❌",
 };
 
 const HEADER_TEMPLATE_PERMISSION = "blue";
 const HEADER_TEMPLATE_RESOLVED = "green";
 const HEADER_TEMPLATE_EXPIRED = "grey";
-const HEADER_TEMPLATE_THINKING_ACTIVE = "wathet";
-const HEADER_TEMPLATE_THINKING_DONE = "purple";
-const HEADER_TEMPLATE_ACTIVITY = "blue";
 
-const EMPTY_THOUGHT_PLACEHOLDER = "（空）";
-const THOUGHT_DEFAULT_TEXT = "正在分析...";
-const ACTIVITY_DEFAULT_TEXT = "准备中...";
+const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> = {
+  thinking:     { content: "💭 思考中...",  template: "wathet" },
+  calling_tool: { content: "🛠 调用工具...", template: "blue" },
+  responding:   { content: "✍️ 回复中...",   template: "blue" },
+  complete:     { content: "✅ 已完成",     template: "green" },
+  cancelled:    { content: "⛔ 已取消",     template: "grey" },
+  failed:       { content: "⚠️ 出错",       template: "red" },
+};
+
+const CANCEL_BUTTON_TEXT = "中断当前任务";
 
 function buttonTypeForKind(kind: string): "primary" | "danger" | "default" {
   if (kind === "allow_always") return "primary";
@@ -92,36 +102,62 @@ function buildExpiredCard(reason: string): object {
   };
 }
 
-function buildThinkingCard(text?: string, isDone?: boolean): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: {
-        tag: "plain_text" as const,
-        content: isDone ? "💭 思考完成" : "💭 思考中...",
-      },
-      template: isDone ? HEADER_TEMPLATE_THINKING_DONE : HEADER_TEMPLATE_THINKING_ACTIVE,
-    },
-    elements: [{ tag: "markdown", content: text ?? THOUGHT_DEFAULT_TEXT }],
-  };
+/** Render one timeline entry to a markdown snippet. Each snippet becomes
+ *  its own card element; consecutive entries are separated by `hr`. */
+function entryToMarkdown(entry: TimelineEntry): string {
+  switch (entry.kind) {
+    case "text":
+      return entry.text;
+    case "thought":
+      // Use blockquote so thoughts visually group differently from output.
+      return entry.text
+        .split("\n")
+        .map((l) => `> ${l}`)
+        .join("\n");
+    case "tool": {
+      const mark = STATUS_MARKS[entry.status];
+      const head = `${mark} **${entry.toolKind}**: \`${entry.title}\``;
+      return entry.detail ? `${head}\n\n${entry.detail}` : head;
+    }
+  }
 }
 
-function buildActivityCard(items: readonly ToolItem[]): object {
-  const lines: string[] = [];
-  for (const item of items) {
-    const mark = STATUS_MARKS[item.status];
-    const line = item.detail
-      ? `- ${mark} \`${item.title}\` (${item.kind}): ${item.detail}`
-      : `- ${mark} \`${item.title}\` (${item.kind})`;
-    lines.push(line);
+function buildUnifiedCard(state: UnifiedCardState): object {
+  const elements: object[] = [];
+
+  if (state.entries.length === 0) {
+    elements.push({ tag: "markdown", content: "_准备中..._" });
+  } else {
+    state.entries.forEach((entry, i) => {
+      if (i > 0) elements.push({ tag: "hr" });
+      elements.push({ tag: "markdown", content: entryToMarkdown(entry) });
+    });
   }
+
+  if (state.cancellable) {
+    elements.push({ tag: "hr" });
+    elements.push({
+      tag: "action",
+      layout: "flow",
+      actions: [
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: CANCEL_BUTTON_TEXT },
+          type: "danger",
+          value: { cancel: true, c: state.chatId },
+        },
+      ],
+    });
+  }
+
+  const header = STATUS_HEADER[state.status];
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: "plain_text" as const, content: "📋 Agent 工作中" },
-      template: HEADER_TEMPLATE_ACTIVITY,
+      title: { tag: "plain_text" as const, content: header.content },
+      template: header.template,
     },
-    elements: [{ tag: "markdown", content: lines.join("\n") || ACTIVITY_DEFAULT_TEXT }],
+    elements,
   };
 }
 
@@ -184,38 +220,20 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async sendThinkingCard(replyToMessageId: string): Promise<string | null> {
+  async sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null> {
     try {
-      return await this.http.replyCard(replyToMessageId, buildThinkingCard());
+      return await this.http.replyCard(replyToMessageId, buildUnifiedCard(state));
     } catch (err) {
-      this.logger.warn({ err, replyToMessageId }, "sendThinkingCard failed");
+      this.logger.warn({ err, replyToMessageId }, "sendUnifiedCard failed");
       return null;
     }
   }
 
-  async updateThinkingCard(cardMessageId: string, thoughtText: string, isDone: boolean): Promise<void> {
-    const card = buildThinkingCard(thoughtText || EMPTY_THOUGHT_PLACEHOLDER, isDone);
+  async updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void> {
     try {
-      await this.http.patchCard(cardMessageId, card);
+      await this.http.patchCard(cardMessageId, buildUnifiedCard(state));
     } catch (err) {
-      this.logger.warn({ err, cardMessageId }, "updateThinkingCard failed");
-    }
-  }
-
-  async sendActivityCard(replyToMessageId: string, items: ToolItem[]): Promise<string | null> {
-    try {
-      return await this.http.replyCard(replyToMessageId, buildActivityCard(items));
-    } catch (err) {
-      this.logger.warn({ err, replyToMessageId }, "sendActivityCard failed");
-      return null;
-    }
-  }
-
-  async updateActivityCard(cardMessageId: string, items: ToolItem[]): Promise<void> {
-    try {
-      await this.http.patchCard(cardMessageId, buildActivityCard(items));
-    } catch (err) {
-      this.logger.warn({ err, cardMessageId }, "updateActivityCard failed");
+      this.logger.warn({ err, cardMessageId }, "updateUnifiedCard failed");
     }
   }
 }

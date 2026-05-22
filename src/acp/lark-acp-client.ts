@@ -2,11 +2,16 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
-import type { LarkPresenter, ToolItem } from "../presenter/presenter.js";
+import type {
+  AgentStatus,
+  LarkPresenter,
+  TimelineEntry,
+  ToolStatus,
+  UnifiedCardState,
+} from "../presenter/presenter.js";
 
 const TYPING_INTERVAL_MS = 5_000;
-const ACTIVITY_FLUSH_DEBOUNCE_MS = 100;
-const EMPTY_THOUGHT_PLACEHOLDER = "（空）";
+const CARD_FLUSH_DEBOUNCE_MS = 100;
 
 const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
 const PERMISSION_SHUTDOWN_REASON = "会话已结束，本次确认已失效";
@@ -27,47 +32,59 @@ export interface LarkAcpClientCallbacks {
 export interface LarkAcpClientOptions {
   presenter: LarkPresenter;
   logger: LarkLogger;
+  /** Include `agent_thought_chunk` updates in the unified card. */
   showThoughts: boolean;
+  /** Include `tool_call` / `tool_call_update` events in the unified card. */
+  showTools: boolean;
+  /**
+   * Render the "中断当前任务" button at the bottom of the running card.
+   * When `false`, the only way to cancel is via a chat command.
+   */
+  showCancelButton: boolean;
   callbacks: LarkAcpClientCallbacks;
   /** Resolve a pending permission as `cancelled` after this many ms (0 = never). */
   permissionTimeoutMs: number;
 }
 
 /**
- * `acp.Client` implementation for one Feishu chat. Buffers text chunks,
- * renders permission cards via {@link LarkPresenter}, and provides agent
- * filesystem access.
+ * `acp.Client` implementation for one Feishu chat. Builds a unified
+ * timeline (text / thought / tool entries) per prompt and patches a
+ * single Lark card as the agent works.
  *
  * One instance per chat — it holds per-prompt state (current message id,
- * activity card id, pending permissions).
+ * timeline entries, unified card id, pending permissions).
  */
 export class LarkAcpClient implements acp.Client {
   private readonly presenter: LarkPresenter;
   private readonly logger: LarkLogger;
   private readonly showThoughts: boolean;
+  private readonly showTools: boolean;
+  private readonly showCancelButton: boolean;
   private readonly permissionTimeoutMs: number;
   private callbacks: LarkAcpClientCallbacks;
 
-  private chunks: string[] = [];
-  private thoughtChunks: string[] = [];
+  private timeline: TimelineEntry[] = [];
+  private status: AgentStatus = "thinking";
   private lastTypingAt = 0;
   private currentMessageId = "";
   private currentChatId = "";
 
   private readonly pendingPermissions = new Map<string, PendingPermission>();
 
-  private thinkingCardId: string | null = null;
-  private thinkingCardCreating: Promise<string | null> | null = null;
+  /** Tool-call id → index into `timeline` for fast updates. */
+  private readonly toolIndex = new Map<string, number>();
 
-  private activityCardId: string | null = null;
-  private readonly toolItems = new Map<string, ToolItem>();
-  private activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  private activityFlushing = false;
+  private cardId: string | null = null;
+  private cardCreating: Promise<string | null> | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushing = false;
 
   constructor(opts: LarkAcpClientOptions) {
     this.presenter = opts.presenter;
     this.logger = opts.logger.child({ name: "acp-client" });
     this.showThoughts = opts.showThoughts;
+    this.showTools = opts.showTools;
+    this.showCancelButton = opts.showCancelButton;
     this.permissionTimeoutMs = opts.permissionTimeoutMs;
     this.callbacks = opts.callbacks;
   }
@@ -82,11 +99,12 @@ export class LarkAcpClient implements acp.Client {
     this.currentChatId = chatId;
   }
 
+  // ----- Permission flow --------------------------------------------------
+
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
     if (!this.currentMessageId) {
-      // No card can be sent → cannot get user consent → must reject.
       this.logger.warn(
         { tool: params.toolCall?.title ?? "unknown" },
         "no message context — cancelling permission request",
@@ -115,20 +133,17 @@ export class LarkAcpClient implements acp.Client {
       this.presenter
         .sendInterruptCard(this.currentMessageId, params, requestId, this.currentChatId)
         .then((cardMessageId) => {
-          // Pending may have been resolved/cleared while we were awaiting.
           const stillPending = this.pendingPermissions.get(requestId);
           if (stillPending) stillPending.cardMessageId = cardMessageId;
         })
         .catch((err) => {
           this.logger.warn({ err, requestId }, "sendInterruptCard failed");
           this.disposePending(requestId);
-          // Card never reached the user — cannot infer consent. Cancel.
           resolve({ outcome: { outcome: "cancelled" } });
         });
     });
   }
 
-  /** Resolve a pending permission request via a card action event. */
   handleCardAction(requestId: string, optionId: string): boolean {
     const pp = this.pendingPermissions.get(requestId);
     if (!pp) return false;
@@ -137,18 +152,12 @@ export class LarkAcpClient implements acp.Client {
     return true;
   }
 
-  /** Cancel all in-flight permission requests (e.g. on user `/cancel` or shutdown). */
   cancelPendingPermission(): void {
     for (const requestId of [...this.pendingPermissions.keys()]) {
       this.expirePendingPermission(requestId, PERMISSION_SHUTDOWN_REASON);
     }
   }
 
-  /**
-   * Resolve a pending permission as cancelled and patch its card to a
-   * "no longer actionable" state. Used by the timeout timer and by
-   * shutdown / cancellation paths.
-   */
   private expirePendingPermission(requestId: string, reason: string): void {
     const pp = this.pendingPermissions.get(requestId);
     if (!pp) return;
@@ -172,41 +181,52 @@ export class LarkAcpClient implements acp.Client {
     this.pendingPermissions.delete(requestId);
   }
 
+  // ----- Session updates → timeline --------------------------------------
+
   async sessionUpdate(params: acp.SessionNotification): Promise<void> {
     const u = params.update;
     switch (u.sessionUpdate) {
       case "agent_message_chunk":
         if (u.content.type === "text") {
-          this.chunks.push(u.content.text);
+          this.appendText("text", u.content.text);
+          this.status = "responding";
+          this.scheduleFlush();
         }
         await this.maybeSendTyping();
         return;
 
       case "agent_thought_chunk":
         if (u.content.type === "text" && this.showThoughts) {
-          this.thoughtChunks.push(u.content.text);
-          this.createThinkingCardIfNeeded().catch((err) =>
-            this.logger.warn({ err }, "thinking card creation failed"),
-          );
+          this.appendText("thought", u.content.text);
+          if (this.status !== "responding") this.status = "thinking";
+          this.scheduleFlush();
         }
         await this.maybeSendTyping();
         return;
 
       case "tool_call": {
-        const title = u.title ?? "unknown";
-        const kind = u.kind ?? "tool";
+        if (!this.showTools) return;
         const toolCallId = (u as Record<string, unknown>).toolCallId as string | undefined;
+        if (!toolCallId) return;
         const rawInput = (u as Record<string, unknown>).rawInput;
         const detail = typeof rawInput === "string" ? rawInput : undefined;
-        const status = (u.status ?? "in_progress") as ToolItem["status"];
-        this.upsertToolItem(toolCallId, title, kind, status, detail);
-        this.refreshActivityCard();
+        this.upsertTool(
+          toolCallId,
+          u.title ?? "unknown",
+          u.kind ?? "tool",
+          (u.status ?? "in_progress") as ToolStatus,
+          detail,
+        );
+        this.status = "calling_tool";
+        this.scheduleFlush();
         await this.maybeSendTyping();
         return;
       }
 
       case "tool_call_update": {
-        const toolCallId = (u as Record<string, unknown>).toolCallId as string;
+        if (!this.showTools) return;
+        const toolCallId = (u as Record<string, unknown>).toolCallId as string | undefined;
+        if (!toolCallId) return;
         if (u.status !== "completed" && u.status !== "failed") return;
 
         if (u.content) {
@@ -216,13 +236,16 @@ export class LarkAcpClient implements acp.Client {
             const lines: string[] = [`--- ${diff.path}`];
             diff.oldText?.split("\n").forEach((l) => lines.push(`- ${l}`));
             diff.newText?.split("\n").forEach((l) => lines.push(`+ ${l}`));
-            this.chunks.push("\n```diff\n" + lines.join("\n") + "\n```\n");
+            this.appendText("text", "\n```diff\n" + lines.join("\n") + "\n```\n");
           }
         }
-        const kind = u.kind ?? "tool";
-        const status = u.status as ToolItem["status"];
-        this.upsertToolItem(toolCallId, u.title ?? "unknown", kind, status);
-        this.refreshActivityCard();
+        this.upsertTool(
+          toolCallId,
+          u.title ?? "unknown",
+          u.kind ?? "tool",
+          u.status as ToolStatus,
+        );
+        this.scheduleFlush();
         return;
       }
     }
@@ -238,92 +261,107 @@ export class LarkAcpClient implements acp.Client {
     return {};
   }
 
-  /** Drain the accumulated text reply. Resets per-prompt state. */
-  async flush(): Promise<string> {
-    await this.finalizeThinkingCard();
-    const text = this.chunks.join("");
-    this.chunks = [];
+  /**
+   * Finalise the unified card with the given terminal status, then reset
+   * per-prompt state so the next prompt starts clean.
+   */
+  async finalize(status: AgentStatus): Promise<void> {
+    this.status = status;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    // Wait for any in-flight flush so we don't race the final patch.
+    while (this.flushing) await new Promise<void>((r) => setTimeout(r, 10));
+    await this.renderCard({ cancellable: false });
+    this.timeline = [];
+    this.toolIndex.clear();
+    this.cardId = null;
+    this.cardCreating = null;
     this.lastTypingAt = 0;
-    this.activityCardId = null;
-    this.toolItems.clear();
-    if (this.activityFlushTimer) clearTimeout(this.activityFlushTimer);
-    this.activityFlushing = false;
-    return text;
+    this.status = "thinking";
   }
 
-  private async createThinkingCardIfNeeded(): Promise<void> {
-    if (this.thinkingCardId) return;
-    if (this.thinkingCardCreating) {
-      const id = await this.thinkingCardCreating;
-      if (id) this.thinkingCardId = id;
+  // ----- Timeline mutators ------------------------------------------------
+
+  private appendText(kind: "text" | "thought", text: string): void {
+    if (!text) return;
+    const last = this.timeline.at(-1);
+    if (last && last.kind === kind) {
+      last.text += text;
       return;
     }
-    if (!this.currentMessageId) return;
-
-    const promise = this.presenter.sendThinkingCard(this.currentMessageId);
-    this.thinkingCardCreating = promise;
-    try {
-      const id = await promise;
-      if (id) this.thinkingCardId = id;
-    } finally {
-      this.thinkingCardCreating = null;
-    }
+    this.timeline.push({ kind, text });
   }
 
-  private async finalizeThinkingCard(): Promise<void> {
-    const id = this.thinkingCardId;
-    if (!id) return;
-    this.thinkingCardId = null;
-    const text = this.thoughtChunks.join("");
-    this.thoughtChunks = [];
-    await this.presenter
-      .updateThinkingCard(id, text || EMPTY_THOUGHT_PLACEHOLDER, true)
-      .catch((err) => this.logger.warn({ err, id }, "updateThinkingCard failed"));
-  }
-
-  private upsertToolItem(
-    toolCallId: string | undefined,
+  private upsertTool(
+    toolCallId: string,
     title: string,
-    kind: string,
-    status: ToolItem["status"],
+    toolKind: string,
+    status: ToolStatus,
     detail?: string,
   ): void {
-    const id = toolCallId ?? `${kind}:${title}:${this.toolItems.size}`;
-    const existing = this.toolItems.get(id);
-    if (existing) {
-      if (title !== "unknown") existing.title = title;
-      if (detail !== undefined) existing.detail = detail;
-      existing.status = status;
-    } else {
-      this.toolItems.set(id, { title, kind, status, detail });
+    const idx = this.toolIndex.get(toolCallId);
+    if (idx !== undefined) {
+      const existing = this.timeline[idx];
+      if (existing?.kind === "tool") {
+        if (title !== "unknown") existing.title = title;
+        existing.toolKind = toolKind;
+        existing.status = status;
+        if (detail !== undefined) existing.detail = detail;
+      }
+      return;
     }
+    this.toolIndex.set(toolCallId, this.timeline.length);
+    this.timeline.push({ kind: "tool", toolCallId, title, toolKind, status, detail });
   }
 
-  private refreshActivityCard(): void {
+  // ----- Card flush -------------------------------------------------------
+
+  private scheduleFlush(): void {
     if (!this.currentMessageId) return;
-    if (this.activityFlushing) return;
-    if (this.activityFlushTimer) clearTimeout(this.activityFlushTimer);
-
-    this.activityFlushTimer = setTimeout(() => {
-      this.activityFlushTimer = null;
-      this.flushActivityCard().catch((err) =>
-        this.logger.warn({ err }, "activity card flush failed"),
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.renderCard({ cancellable: true }).catch((err) =>
+        this.logger.warn({ err }, "card flush failed"),
       );
-    }, ACTIVITY_FLUSH_DEBOUNCE_MS);
+    }, CARD_FLUSH_DEBOUNCE_MS);
   }
 
-  private async flushActivityCard(): Promise<void> {
-    this.activityFlushing = true;
+  private async renderCard(opts: { cancellable: boolean }): Promise<void> {
+    if (!this.currentMessageId && !this.cardId) return;
+    this.flushing = true;
     try {
-      const items = [...this.toolItems.values()];
-      if (this.activityCardId === null) {
-        const id = await this.presenter.sendActivityCard(this.currentMessageId, items);
-        if (id) this.activityCardId = id;
-      } else {
-        await this.presenter.updateActivityCard(this.activityCardId, items);
+      const state: UnifiedCardState = {
+        status: this.status,
+        entries: this.timeline,
+        cancellable: opts.cancellable && this.showCancelButton,
+        chatId: this.currentChatId,
+      };
+
+      if (this.cardId) {
+        await this.presenter.updateUnifiedCard(this.cardId, state);
+        return;
+      }
+      if (this.cardCreating) {
+        const id = await this.cardCreating;
+        if (id) {
+          this.cardId = id;
+          await this.presenter.updateUnifiedCard(id, state);
+        }
+        return;
+      }
+      const promise = this.presenter.sendUnifiedCard(this.currentMessageId, state);
+      this.cardCreating = promise;
+      try {
+        const id = await promise;
+        if (id) this.cardId = id;
+      } finally {
+        this.cardCreating = null;
       }
     } finally {
-      this.activityFlushing = false;
+      this.flushing = false;
     }
   }
 
