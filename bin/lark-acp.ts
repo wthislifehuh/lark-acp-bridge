@@ -26,11 +26,15 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import process from "node:process";
+import { createRequire } from "node:module";
 import { LarkBridge, FileSessionStore, createPinoLogger, PERMISSION_MODES } from "../src/index.js";
 import type { LarkLogger, PermissionMode } from "../src/index.js";
 import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
 
-const VERSION = "0.4.0";
+// Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
+const { version: VERSION } = createRequire(import.meta.url)("../../package.json") as {
+  version: string;
+};
 
 const APP_NAME = "lark-acp";
 const CONFIG_FILE = "config.json";

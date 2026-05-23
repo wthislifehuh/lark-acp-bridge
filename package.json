@@ -1,6 +1,6 @@
 {
-  "name": "lark-acp",
-  "version": "0.4.0",
+  "name": "@4t145/lark-acp",
+  "version": "0.1.0",
   "description": "Bridge Feishu/Lark to any ACP-compatible AI agent",
   "type": "module",
   "files": [
@@ -8,6 +8,9 @@
     "README.md",
     "package.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "lark-acp": "./dist/bin/lark-acp.js",
     "lark-acp-mock": "./dist/bin/mock-agent.js"

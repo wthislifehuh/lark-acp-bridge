@@ -1,0 +1,50 @@
+name: Publish to npm
+
+# Triggered when a GitHub Release is published. The job is gated on the
+# release targeting the `release` branch so that drafts cut from feature
+# branches never accidentally publish.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: github.event.release.target_commitish == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for `npm publish --provenance`.
+      id-token: write
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.target_commitish }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match release tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      # --ignore-scripts skips `prepare`, which would otherwise build twice
+      # (once on install, once on publish via the same `prepare` hook).
+      - name: Install dependencies
+        run: npm install --no-package-lock --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish
+        run: npm publish --provenance --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

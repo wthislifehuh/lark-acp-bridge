@@ -1,8 +1,17 @@
 # lark-acp
 
+[![npm version](https://img.shields.io/npm/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
+[![npm downloads](https://img.shields.io/npm/dm/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
+[![node version](https://img.shields.io/node/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
+[![license](https://img.shields.io/npm/l/@4t145/lark-acp.svg)](./LICENSE)
+
 > ⚠️ **WIP**：仍在迭代中，1.0 之前 CLI 选项与配置字段可能继续调整。
 
 把 [飞书/Lark](https://open.larksuite.com/) 机器人接到任何符合 [ACP（Agent Client Protocol）](https://agentcommunicationprotocol.dev/) 的 AI Agent 上：用户在飞书里发消息，agent 在你的机器上跑，过程和结果都以一张可交互的飞书卡片呈现，工具调用授权、中断、跨进程恢复会话都在卡片里完成。
+
+<p align="center">
+  <img src="docs/mock-example.png" alt="lark-acp 在飞书里的演示卡片" width="640">
+</p>
 
 ---
 
@@ -12,7 +21,7 @@
 
 ```bash
 # 通过 npm / npx：
-npx lark-acp --help
+npx -y @4t145/lark-acp --help
 
 # 或在仓库内本地构建：
 bun install
