@@ -17,6 +17,10 @@ src/
   lark/           飞书 SDK 薄封装：HTTP（lark-http）+ WebSocket（lark-ws）
   session-store/  chat → sessionId 持久化（文件）
   logger/         pino 封装
+bin/
+  lark-acp.ts     CLI 入口
+  agents.ts       内置 agent 预设 + 用户配置合并（CLI-only，库不暴露）
+  mock-agent.ts   本地端到端调试用的脚本化 ACP agent
 ```
 
 每个子目录的 `index.ts` 仅 re-export 公开 API；子模块内部直接互相引用具体文件，避免 barrel 链。
@@ -71,7 +75,7 @@ type TimelineEntry =
 
 - 同类型相邻条目会合并（`appendText` 把连续的 chunk 拼到最后一项）；
 - 工具条目通过 `toolCallId → index` 索引表 O(1) 查找更新（`tool_call_update` 事件）；
-- 渲染时连续条目用 `hr` 分隔，思考用 markdown 引用块（`> `）与正文区分；
+- 渲染时连续条目用 `hr` 分隔，思考用 v2 `collapsible_panel` 折叠展示；
 - 卡片头部 `STATUS_HEADER` 实时反映 Agent 状态：`thinking` / `calling_tool` / `responding` / `complete` / `cancelled` / `failed`；
 - 运行中卡片底部带"中断当前任务"按钮；finalize 时按钮消失、头部变为终态色。
 
@@ -121,7 +125,7 @@ LarkBridge.handleCardAction
   └─ pp.resolve({ outcome: "cancelled" })，原卡片 patch 成"已失效"
 ```
 
-`sendInterruptCard` 失败时**默认 cancel 而非 allow**，避免静默放行。
+`sendInterruptCard` 失败时**默认 cancel 而非 allow**，避免静默放行。`--permission-mode alwaysAllow` / `alwaysDeny` 会跳过卡片直接自动应答，适合无人值守场景。
 
 ### 多会话并发与生命周期
 
@@ -145,7 +149,7 @@ LarkBridge.handleCardAction
 | `file` / `audio` / `media` / `sticker`                     | 描述性文本占位（带 `file_key`）                                         |
 | `share_chat` / `share_user` / `location` / `merge_forward` | 描述性文本占位                                                          |
 
-桥接层不会主动把任何二进制资源塞进 prompt。Agent 如果真的需要图片或文件内容，应通过未来的飞书工具（见下文「飞书工具注入」）凭 `message_id` / `image_key` / `file_key` 自行拉取。这样可以避免给小模型塞过大的 base64 上下文，也让授权和限频留给 Agent 自己控制。
+桥接层不会主动把任何二进制资源塞进 prompt。Agent 如果真的需要图片或文件内容，应通过未来的飞书工具（见下文「飞书工具注入」）凭 `message_id` / `image_key` / `file_key` 自行拉取。
 
 每条消息前会被注入一段上下文文本：
 
@@ -153,28 +157,59 @@ LarkBridge.handleCardAction
 [上下文: 群聊 "项目协作群" (oc_xxx) 中用户 张三 (ou_xxx) 的消息]
 ```
 
-### Agent 输出 → 飞书 post 富文本
-
-仅用于系统通知（取消提示、Agent 错误）的 `replyText` 走 `presenter/lark-markdown.ts`：
-
-- `marked@18` 解析 markdown AST；
-- 标题 → 加粗段落；段落 → 内联文本/链接/样式；
-- 代码块 → `code_block`（语言走白名单 + 别名映射，非白名单语言 fallback 无 language）；
-- 列表 / 引用 → 飞书 `md` 标签（飞书 post 中唯一原生支持列表/引用的元素）；
-- 表格 → 列宽对齐的 `code_block`（`md` 标签不支持表格）；
-- 长消息按 `\n\`\`\`\n`/`\n\n`/`\n`边界拆分到`MAX_MARKDOWN_CHUNK = 4000` 以下；
-- 行内代码 → 用反引号包裹的纯文本（post 没有 inline-code 元素）；
-- 图片 → 退化为可点击链接（post 的 `img` 需要 `image_key`，agent 发的 URL 没法直接用）。
-
-Agent 的主输出**不**走 `replyText`——它进入 unified card 的时间线，由 `presenter/lark-presenter.ts` 渲染成卡片的 `markdown` 元素。
-
 ---
 
 ## 路线图
 
-### 飞书工具注入（高优 / 进行中）
+### ACP 协议侧补完（高优）
 
-目前桥接层是**单向**的——飞书消息 → ACP prompt，Agent 输出 → 飞书卡片。Agent 无法主动**调用**飞书的能力（发选项卡让用户选、下载用户上传的文件、给指定群发消息、查群成员等）。
+桥接层目前只用了 ACP 的 `initialize` / `newSession` / `loadSession` / `unstable_resumeSession` / `prompt` / `cancel` / `requestPermission`。SDK 已经定义但还没接的能力：
+
+#### Slash command（`AvailableCommandsUpdate`）
+
+ACP agent 可以在 session 启动时（或运行中）通过 `availableCommands_update` 通知客户端它支持哪些斜杠命令（如 Claude Code 的 `/clear`、`/compact`、`/model`）。每个命令带 `name` / `description` / `input` schema。
+
+桥接层目前只识别硬编码的 `/cancel` / `/new`，需要：
+
+- 在 `LarkAcpClient` 里捕获 `availableCommands_update` 事件，按 chatId 维护当前可用命令列表；
+- 把 agent 暴露的命令转成飞书侧入口——候选方案：
+  - 在 unified card 顶部 / 底部加一组按钮，点击后桥接层把命令名拼成 prompt 发给 agent；
+  - 用户输入 `/foo` 时，先匹配桥接层硬编码命令，再回退到 agent 的 availableCommands；
+  - `lark-acp commands` 子命令在终端列出当前 chat 可用的斜杠命令（调试用）。
+- 对带 `input` schema 的命令（要参数），考虑用飞书互动卡片的 input 元素收集再提交。
+
+#### Session list（`session/list`）
+
+`SessionListCapabilities` / `ListSessionsRequest` 让客户端能列出 agent 端持久化的 session。可以实现 `/sessions` 命令在飞书里展示当前 chat 历史 sessions、点击切换。
+
+需要：
+
+- 在 `acquireRuntime` / 启动时探测 `agentCapabilities.session.list` 是否为 true；
+- 加 `/sessions` 命令处理，调用 `connection.listSessions()`，把返回结果渲染成卡片列表；
+- 卡片上每项一个按钮："切换到这个 session"——按下后 `loadSession` 替换当前 `ChatRuntime` 的 sessionId，并把 `SessionStore` 里的 mapping 也改掉。
+
+#### Session mode（`SetSessionModeRequest` / `SessionModeState`）
+
+ACP 的 session mode 是 agent 自定义的运行档位（如 Claude Code 的 `default` / `acceptEdits` / `bypassPermissions` / `plan`）。Agent 在 session 启动 / 运行中通过 `current_mode_update` 通知 mode，客户端可以通过 `session/setMode` 切换。
+
+需要：
+
+- 在 `LarkAcpClient` 监听 `current_mode_update`，把当前 mode + 可选 modes 列表挂到 runtime state；
+- 卡片头部或底部展示当前 mode（小 tag），并提供切换入口（按钮 / 选择器）；
+- 卡片按钮 callback 触发 `connection.setSessionMode({ sessionId, modeId })`。
+- 这个能力和「permission mode」语义有重叠——前者是 agent 内部档位，后者是桥接层对 `requestPermission` 的兜底策略。两者互不替代，UI 上要分清。
+
+#### Session fork（`session/fork`）
+
+让用户从某条历史 prompt 分支出新 session（"从这里开始重写"）。优先级低于上面三项。
+
+#### Model 切换（`SetSessionModelRequest`）
+
+Agent 在 session state 里可能暴露多个可选模型（`SessionModelState`）。可以加 `/model` 命令或卡片里的模型选择器。优先级低。
+
+### 飞书工具注入（高优）
+
+桥接层是**单向**的——飞书消息 → ACP prompt，Agent 输出 → 飞书卡片。Agent 无法主动**调用**飞书的能力（发选项卡让用户选、下载用户上传的文件、给指定群发消息、查群成员等）。
 
 下一步要把这些能力作为 **ACP 工具**暴露给 Agent，让 Agent 能在自己的工具调用循环中直接驱动飞书。
 
@@ -193,8 +228,6 @@ connection.newSession({
 ```
 
 这样 Agent 端**不需要任何改动**——它通过自己原生的 MCP 客户端发现并调用工具，调用结果再以工具调用的形式回到 ACP 流里，桥接层照常渲染到 unified card。
-
-另一种更轻量的方向：复用 `LarkAcpClient` 已有的 `requestPermission` 通道——把"发选项卡让用户选"伪装成一个授权请求。这条路不需要 MCP server，但语义不太对（授权 ≠ 业务问答），先不优先。
 
 #### 候选工具清单
 
@@ -223,13 +256,13 @@ connection.newSession({
 
 #### 待解决的设计问题
 
-- **工具调用与 unified card 的关系**：Agent 调用 `lark.askChoice` 时，问答卡片应该是另发一张消息，还是嵌进当前 unified card？嵌进去会让"取消"按钮的语义变模糊；另发一张又会破坏"一轮对话一张卡片"的设计。倾向另发，但需要在 unified card 里留一条 `tool: lark.askChoice` 时间线条目作为索引。
 - **阻塞 vs. 异步**：MCP 工具调用是同步的（agent 等待返回），但飞书侧的用户操作是异步事件回调。需要在 MCP server 端做 promise bridge，与现有 `pendingPermissions` 模式同构。
 - **权限边界**：`sendMessage` 给任意 chat 发消息是高风险能力，是否需要白名单 / 配置开关 / 卡片确认？至少要有 `enabledTools: string[]` 或 `tools.allow` / `tools.deny` 的配置项。
 - **飞书 API 限频**：Agent 可能会高频调用，需要在 MCP server 层加 rate limit，避免触发飞书的接口风控。
 - **Agent 兼容性**：不是所有 ACP agent 都启用了 MCP 客户端能力。要在 `initialize` 后检查 `agentCapabilities` 决定是否注入工具。
 
-### 其他待办
+### 工程化
 
-- **测试**：尚无 unit / integration test；计划用 `vitest`。
+- **测试**：尚无 unit / integration test；计划用 `vitest`，与被测代码同目录、`<module>.test.ts` 命名；E2E 用 mock agent + 假 Lark HTTP server。
 - **API 文档完整度**：JSDoc / `@throws` 注释参差，需要补齐到 1.0 之前。
+- **结构化错误类型**：目前大量地方抛 `new Error(...)`；按 CLAUDE.md 第 12 节，需要拆成带 `kind` 的子类（`AgentSpawnError` / `LarkApiError` / `SessionResumeError` 等）。
