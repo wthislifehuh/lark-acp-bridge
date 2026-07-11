@@ -475,9 +475,17 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       i++;
       continue;
     }
+    // `--domain` pairs naturally with `--agent`, so accept it here too
+    // (it also works as a global option before `proxy`).
+    if (token === "--domain") {
+      domain = validateDomain("--domain", takeValue("--domain"));
+      i++;
+      continue;
+    }
     throw new CliError(
       `unknown option after \`proxy\`: ${token}` +
-        " (global options must appear before `proxy`; agent flags must appear after `--`)",
+        " (only --agent and --domain may follow `proxy`; other global options must" +
+        " appear before `proxy`, and agent flags must appear after `--`)",
     );
   }
 
@@ -683,7 +691,7 @@ function printHelp(): void {
     `                         or a custom base URL (default ${DEFAULT_LARK_DOMAIN}).`,
     `                         Use "lark" for apps on Lark International`,
     `                         (open.larksuite.com); the default targets Feishu`,
-    `                         (open.feishu.cn).`,
+    `                         (open.feishu.cn). May also be placed after \`proxy\`.`,
     `  --idle-timeout <min>   Evict idle chats after N minutes (0 = never; default ${DEFAULT_IDLE_TIMEOUT_MINUTES})`,
     `  --max-chats <n>        Maximum concurrent chats (default ${DEFAULT_MAX_CHATS})`,
     `  --hide-thoughts        Skip agent_thought_chunk events in the unified card`,
@@ -697,6 +705,7 @@ function printHelp(): void {
     `Subcommands:`,
     `  proxy                  Spawn an ACP agent subprocess and bridge it to Lark.`,
     `    --agent <preset>     Use a built-in preset: ${presetIds}`,
+    `    --domain <region>    Same as the global --domain, accepted here for convenience.`,
     `    -- <cmd> [args...]   Or pass a raw command. Tokens after \`--\` are forwarded`,
     `                         verbatim, so the agent's own flags are never re-parsed.`,
     `                         Combined with --agent, extra tokens are appended to the`,
