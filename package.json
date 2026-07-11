@@ -24,7 +24,7 @@
     }
   },
   "scripts": {
-    "build": "tsc && chmod +x dist/bin/lark-acp.js dist/bin/mock-agent.js",
+    "build": "tsc && node -e \"for (const f of ['dist/bin/lark-acp.js','dist/bin/mock-agent.js']) require('fs').chmodSync(f, 0o755)\"",
     "prepare": "npm run build",
     "start": "node dist/bin/lark-acp.js",
     "dev": "tsc --watch",
