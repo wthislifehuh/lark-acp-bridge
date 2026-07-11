@@ -40,3 +40,11 @@ export { FileSessionStore } from "./session-store/file-session-store.js";
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";
+
+export {
+  LARK_DOMAINS,
+  DEFAULT_LARK_DOMAIN,
+  isLarkDomainName,
+  resolveLarkDomain,
+} from "./lark/domain.js";
+export type { LarkDomainName } from "./lark/domain.js";

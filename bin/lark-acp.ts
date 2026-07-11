@@ -27,8 +27,16 @@ import path from "node:path";
 import os from "node:os";
 import process from "node:process";
 import { createRequire } from "node:module";
-import { LarkBridge, FileSessionStore, createPinoLogger, PERMISSION_MODES } from "../src/index.js";
-import type { LarkLogger, PermissionMode } from "../src/index.js";
+import {
+  LarkBridge,
+  FileSessionStore,
+  createPinoLogger,
+  PERMISSION_MODES,
+  LARK_DOMAINS,
+  DEFAULT_LARK_DOMAIN,
+  isLarkDomainName,
+} from "../src/index.js";
+import type { LarkLogger, PermissionMode, LarkDomainName } from "../src/index.js";
 import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
 
 // Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
@@ -41,6 +49,7 @@ const CONFIG_FILE = "config.json";
 
 const ENV_APP_ID = "LARK_ACP_APP_ID";
 const ENV_APP_SECRET = "LARK_ACP_APP_SECRET";
+const ENV_DOMAIN = "LARK_ACP_DOMAIN";
 const ENV_CONFIG = "LARK_ACP_CONFIG";
 const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
 const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
@@ -82,6 +91,8 @@ function envDataDirOverride(): string | undefined {
 type FileCredentials = {
   readonly appId?: string;
   readonly appSecret?: string;
+  /** Deployment region name or custom base URL; see {@link validateDomain}. */
+  readonly domain?: string;
 };
 
 type FileRuntime = {
@@ -154,6 +165,27 @@ function isPermissionMode(value: string): value is PermissionMode {
 }
 
 /**
+ * Accept a deployment region name (`"feishu"` | `"lark"`) or a full custom
+ * base URL (for private / on-prem Lark deployments), returning the value
+ * unchanged. Anything else is rejected.
+ *
+ * @throws {CliError} when `value` is neither a known region nor a URL.
+ */
+function validateDomain(label: string, value: string): LarkDomainName | string {
+  if (isLarkDomainName(value)) return value;
+  if (isHttpUrl(value)) return value;
+  throw new CliError(
+    `${label} must be one of: ${LARK_DOMAINS.join(" | ")}, or an http(s) base URL (got: ${value})`,
+  );
+}
+
+function isHttpUrl(value: string): boolean {
+  if (!URL.canParse(value)) return false;
+  const { protocol } = new URL(value);
+  return protocol === "https:" || protocol === "http:";
+}
+
+/**
  * Read and validate the JSON config file if present.
  *
  * @throws {CliError} when the file exists but is malformed.
@@ -180,12 +212,14 @@ function readConfigFile(filePath: string): FileConfig {
   const credentialsObj = asObjectOpt("credentials", root["credentials"]) ?? {};
   const runtimeObj = asObjectOpt("runtime", root["runtime"]) ?? {};
 
+  const appIdField = asStringOpt("credentials.appId", credentialsObj["appId"]);
+  const appSecretField = asStringOpt("credentials.appSecret", credentialsObj["appSecret"]);
+  const domainField = asStringOpt("credentials.domain", credentialsObj["domain"]);
   const credentials: FileCredentials = {
-    ...(asStringOpt("credentials.appId", credentialsObj["appId"]) !== undefined
-      ? { appId: asStringOpt("credentials.appId", credentialsObj["appId"])! }
-      : {}),
-    ...(asStringOpt("credentials.appSecret", credentialsObj["appSecret"]) !== undefined
-      ? { appSecret: asStringOpt("credentials.appSecret", credentialsObj["appSecret"])! }
+    ...(appIdField !== undefined ? { appId: appIdField } : {}),
+    ...(appSecretField !== undefined ? { appSecret: appSecretField } : {}),
+    ...(domainField !== undefined
+      ? { domain: validateDomain("credentials.domain", domainField) }
       : {}),
   };
 
@@ -264,10 +298,7 @@ function parseAgentArgs(id: string, value: unknown): readonly string[] | undefin
   });
 }
 
-function parseAgentEnv(
-  id: string,
-  value: unknown,
-): Readonly<Record<string, string>> | undefined {
+function parseAgentEnv(id: string, value: unknown): Readonly<Record<string, string>> | undefined {
   const obj = asObjectOpt(`agents.${id}.env`, value);
   if (!obj) return undefined;
   const out: Record<string, string> = {};
@@ -316,6 +347,7 @@ type ParsedArgs = {
   readonly cwd?: string;
   readonly configPath?: string;
   readonly dataDir?: string;
+  readonly domain?: string;
   readonly idleTimeoutMinutes?: number;
   readonly maxChats?: number;
   readonly hideThoughts?: boolean;
@@ -341,6 +373,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let cwd: string | undefined;
   let configPath: string | undefined;
   let dataDir: string | undefined;
+  let domain: string | undefined;
   let idleTimeoutMinutes: number | undefined;
   let maxChats: number | undefined;
   let hideThoughts: boolean | undefined;
@@ -393,6 +426,9 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--data-dir":
         dataDir = takeValue("--data-dir");
+        break;
+      case "--domain":
+        domain = validateDomain("--domain", takeValue("--domain"));
         break;
       case "--idle-timeout":
         idleTimeoutMinutes = parseInt("--idle-timeout", takeValue("--idle-timeout"), true);
@@ -486,6 +522,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(cwd !== undefined ? { cwd } : {}),
       ...(configPath !== undefined ? { configPath } : {}),
       ...(dataDir !== undefined ? { dataDir } : {}),
+      ...(domain !== undefined ? { domain } : {}),
       ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
       ...(maxChats !== undefined ? { maxChats } : {}),
       ...(hideThoughts !== undefined ? { hideThoughts } : {}),
@@ -502,6 +539,8 @@ type EffectiveConfig = {
   readonly appId: string;
   readonly appSecret: string;
   readonly credentialsSource: string;
+  readonly domain: LarkDomainName | string;
+  readonly domainSource: string;
   readonly cwd: string;
   readonly dataDir: string;
   readonly idleTimeoutMs: number;
@@ -539,6 +578,23 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   const idSource = envId ? `env:${ENV_APP_ID}` : `file:${configPath}`;
   const secretSource = envSecret ? `env:${ENV_APP_SECRET}` : `file:${configPath}`;
   const credentialsSource = idSource === secretSource ? idSource : `${idSource}+${secretSource}`;
+
+  // ----- domain: flag > env > file > default -----
+  const envDomain = process.env[ENV_DOMAIN];
+  const validatedEnvDomain =
+    envDomain !== undefined && envDomain.length > 0
+      ? validateDomain(ENV_DOMAIN, envDomain)
+      : undefined;
+  const domain =
+    args.domain ?? validatedEnvDomain ?? file.credentials.domain ?? DEFAULT_LARK_DOMAIN;
+  const domainSource =
+    args.domain !== undefined
+      ? "flag:--domain"
+      : validatedEnvDomain !== undefined
+        ? `env:${ENV_DOMAIN}`
+        : file.credentials.domain !== undefined
+          ? `file:${configPath}`
+          : "default";
 
   // ----- cwd: flag > file > process.cwd() -----
   const rawCwd = args.cwd ?? file.runtime.cwd ?? process.cwd();
@@ -579,6 +635,8 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     appId,
     appSecret,
     credentialsSource,
+    domain,
+    domainSource,
     cwd,
     dataDir,
     idleTimeoutMs: idleTimeoutMinutes * 60_000,
@@ -621,6 +679,11 @@ function printHelp(): void {
     `  --data-dir <dir>       Override the on-disk state directory`,
     `                         (default: $XDG_DATA_HOME/${APP_NAME},`,
     `                          fallback ~/.local/share/${APP_NAME})`,
+    `  --domain <region>      Lark/Feishu deployment: ${LARK_DOMAINS.join(" | ")}`,
+    `                         or a custom base URL (default ${DEFAULT_LARK_DOMAIN}).`,
+    `                         Use "lark" for apps on Lark International`,
+    `                         (open.larksuite.com); the default targets Feishu`,
+    `                         (open.feishu.cn).`,
     `  --idle-timeout <min>   Evict idle chats after N minutes (0 = never; default ${DEFAULT_IDLE_TIMEOUT_MINUTES})`,
     `  --max-chats <n>        Maximum concurrent chats (default ${DEFAULT_MAX_CHATS})`,
     `  --hide-thoughts        Skip agent_thought_chunk events in the unified card`,
@@ -642,7 +705,7 @@ function printHelp(): void {
     ``,
     `Configuration file (${CONFIG_FILE}):`,
     `  {`,
-    `    "credentials": { "appId": "cli_...", "appSecret": "..." },`,
+    `    "credentials": { "appId": "cli_...", "appSecret": "...", "domain": "${DEFAULT_LARK_DOMAIN}" },`,
     `    "dataDir": "./var/lark-acp",`,
     `    "runtime": {`,
     `      "cwd": "/work/project",`,
@@ -666,12 +729,14 @@ function printHelp(): void {
     ``,
     `  All fields are optional. CLI flags override file values; env vars`,
     `  ${ENV_APP_ID} / ${ENV_APP_SECRET} override the credentials block;`,
+    `  ${ENV_DOMAIN} overrides credentials.domain;`,
     `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode.`,
     `  Entries under "agents" with a built-in id patch that preset; new ids`,
     `  add user presets and must define both \`label\` and \`command\`.`,
     ``,
     `Examples:`,
     `  ${APP_NAME} proxy --agent claude`,
+    `  ${APP_NAME} --domain lark proxy --agent claude`,
     `  ${APP_NAME} --cwd /work/project proxy --agent opencode`,
     `  ${APP_NAME} --hide-thoughts proxy --agent copilot`,
     `  ${APP_NAME} --permission-mode alwaysAllow proxy --agent claude`,
@@ -713,10 +778,7 @@ type ResolvedAgentInvocation = {
   readonly displayLabel: string;
 };
 
-function resolveAgentInvocation(
-  args: ParsedArgs,
-  registry: Registry,
-): ResolvedAgentInvocation {
+function resolveAgentInvocation(args: ParsedArgs, registry: Registry): ResolvedAgentInvocation {
   if (args.agentPreset !== undefined) {
     const entry = registry.get(args.agentPreset);
     if (!entry) {
@@ -761,6 +823,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     `config:      ${configPath}${fs.existsSync(configPath) ? "" : " (not found, using defaults)"}`,
   );
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
+  cliLogger.info(`domain:      ${cfg.domain} (${cfg.domainSource})`);
   cliLogger.info(`agent:       ${invocation.displayLabel}`);
   cliLogger.info(`cwd:         ${cfg.cwd}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
@@ -769,7 +832,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const sessionStore = new FileSessionStore(cfg.dataDir);
 
   const bridge = new LarkBridge({
-    lark: { appId: cfg.appId, appSecret: cfg.appSecret },
+    lark: { appId: cfg.appId, appSecret: cfg.appSecret, domain: cfg.domain },
     agent: {
       command: invocation.command,
       args: [...invocation.args],

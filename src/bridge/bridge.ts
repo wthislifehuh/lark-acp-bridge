@@ -2,6 +2,7 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
+import type { LarkDomainName } from "../lark/domain.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
 import {
@@ -73,6 +74,13 @@ interface CardActionPayload {
 export interface LarkBridgeLarkOptions {
   appId: string;
   appSecret: string;
+  /**
+   * Deployment region (`"feishu"` | `"lark"`) or a custom base URL.
+   * Defaults to the SDK's Feishu domain when omitted; apps on Lark
+   * International must set `"lark"` or the server rejects the connection
+   * with code `1000040351` ("Incorrect domain name").
+   */
+  domain?: LarkDomainName | string;
 }
 
 export interface LarkBridgeAgentOptions {
@@ -169,6 +177,7 @@ export class LarkBridge {
     this.http = new LarkHttpClient({
       appId: opts.lark.appId,
       appSecret: opts.lark.appSecret,
+      ...(opts.lark.domain !== undefined ? { domain: opts.lark.domain } : {}),
       logger: this.logger,
     });
 
@@ -209,6 +218,7 @@ export class LarkBridge {
     this.ws = new LarkWsConnection({
       appId: this.lark.appId,
       appSecret: this.lark.appSecret,
+      ...(this.lark.domain !== undefined ? { domain: this.lark.domain } : {}),
       logger: this.logger,
       onMessage: (event) => this.handleMessage(event),
       onCardAction: (event) => this.handleCardAction(event),

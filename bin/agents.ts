@@ -73,6 +73,12 @@ export const BUILT_IN_AGENTS: Readonly<Record<string, AgentPreset>> = {
     args: ["acp"],
     description: "OpenCode (assumes `opencode` is on $PATH)",
   },
+  kiro: {
+    label: "Kiro CLI",
+    command: "kiro-cli",
+    args: ["acp"],
+    description: "Kiro CLI (native ACP via `kiro-cli acp`; assumes `kiro-cli` is on $PATH and logged in)",
+  },
   mock: {
     label: "Mock Agent",
     command: "lark-acp-mock",

@@ -1,5 +1,6 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { LarkLogger } from "../logger/logger.js";
+import { resolveLarkDomain, type LarkDomainName } from "./domain.js";
 
 const REACTION_THINKING = "THINKING";
 
@@ -11,6 +12,12 @@ const BOT_INFO_URL = "/open-apis/bot/v3/info";
 export interface LarkHttpOptions {
   appId: string;
   appSecret: string;
+  /**
+   * Deployment region (`"feishu"` | `"lark"`) or a custom base URL.
+   * Defaults to the SDK's Feishu domain when omitted; set `"lark"` for
+   * apps on Lark International.
+   */
+  domain?: LarkDomainName | string;
   logger: LarkLogger;
 }
 
@@ -36,6 +43,7 @@ export class LarkHttpClient {
     this.client = new Lark.Client({
       appId: opts.appId,
       appSecret: opts.appSecret,
+      ...(opts.domain !== undefined ? { domain: resolveLarkDomain(opts.domain) } : {}),
       appType: Lark.AppType.SelfBuild,
       loggerLevel: Lark.LoggerLevel.error,
     });

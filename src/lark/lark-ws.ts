@@ -1,5 +1,6 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { adaptToSdkLogger, type LarkLogger } from "../logger/logger.js";
+import { resolveLarkDomain, type LarkDomainName } from "./domain.js";
 
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
 
@@ -10,6 +11,12 @@ const CARD_ACTION_TOAST_OK = {
 export interface LarkWsOptions {
   appId: string;
   appSecret: string;
+  /**
+   * Deployment region (`"feishu"` | `"lark"`) or a custom base URL.
+   * Defaults to the SDK's Feishu domain when omitted; set `"lark"` for
+   * apps on Lark International.
+   */
+  domain?: LarkDomainName | string;
   logger: LarkLogger;
   onMessage: (event: Lark.RawMessageEvent) => void;
   onCardAction: (event: Lark.CardActionEvent) => void;
@@ -34,6 +41,7 @@ export class LarkWsConnection {
     this.wsClient = new Lark.WSClient({
       appId: opts.appId,
       appSecret: opts.appSecret,
+      ...(opts.domain !== undefined ? { domain: resolveLarkDomain(opts.domain) } : {}),
       loggerLevel: LARK_LOGGER_LEVEL,
       logger: sdkLogger,
     });
