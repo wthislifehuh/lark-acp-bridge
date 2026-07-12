@@ -1,11 +1,13 @@
 # lark-acp
 
-[![npm version](https://img.shields.io/npm/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![npm downloads](https://img.shields.io/npm/dm/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![node version](https://img.shields.io/node/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![license](https://img.shields.io/npm/l/@4t145/lark-acp.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
+[![npm downloads](https://img.shields.io/npm/dm/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
+[![node version](https://img.shields.io/node/v/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
+[![license](https://img.shields.io/npm/l/lark-agent-acp-bridge.svg)](./LICENSE)
 
 **English** | **[中文](docs/README_CN.md)**
+
+> 💡 **Credits**: this project is heavily modified and extended from the original [4t145/lark-acp](https://github.com/4t145/lark-acp) — adding native support for the Kiro and Amazon Q agents, Feishu/Lark region (domain) switching, Windows build support, and other fixes. Many thanks to [@4t145](https://github.com/4t145) for the excellent foundation.
 
 **Turn your Feishu / Lark bot into an AI coding agent.** `lark-acp` bridges a [Feishu/Lark](https://open.larksuite.com/) bot to **any AI agent that speaks the [Agent Client Protocol (ACP)](https://agentcommunicationprotocol.dev/)** — Claude Code, Kiro CLI, OpenAI Codex, Google Gemini CLI, GitHub Copilot CLI, OpenCode, Amazon Q Developer CLI, or your own ACP server.
 
@@ -58,8 +60,19 @@ For real-world use we strongly recommend pairing this with the [Lark CLI](https:
 
 **Prerequisites**: Node.js ≥ 20, a Feishu/Lark custom app ([setup below](#feishulark-developer-console-setup)), and at least one agent CLI installed and authenticated.
 
+**1. Install** (no git clone needed):
+
 ```bash
-# 1. Write your app credentials (one-time)
+npm i -g lark-agent-acp-bridge
+# or straight from GitHub (builds on install):
+npm i -g github:wthislifehuh/lark-agent-acp-bridge
+```
+
+Either one puts the `lark-acp` command on your `$PATH` — every example in this README uses it.
+
+**2. Write your app credentials** (one-time):
+
+```bash
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp"
 cat > "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json" <<'EOF'
 {
@@ -71,22 +84,33 @@ cat > "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json" <<'EOF'
 }
 EOF
 chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json"
+```
 
-# 2. Start the bridge
-npx -y @4t145/lark-acp proxy --agent claude
+On Windows (PowerShell) the config lives at `~\.config\lark-acp\config.json` — create the same JSON there.
+
+**3. Start the bridge**:
+
+```bash
+lark-acp proxy --agent claude          # Feishu app (open.feishu.cn)
+lark-acp proxy --domain lark --agent gemini   # Lark International app (open.larksuite.com)
 ```
 
 Then find the bot in Feishu/Lark — DM it, or add it to a group and @mention it.
 
-> ⚠️ **Region matters**: if your app was created on **Lark International** (`open.larksuite.com`), set `"domain": "lark"` — otherwise the handshake is rejected with error code `1000040351` ("Incorrect domain name"). The default `feishu` is for apps on `open.feishu.cn`.
+> ⚠️ **Region matters**: if your app was created on **Lark International** (`open.larksuite.com`), set `"domain": "lark"` in the config (or pass `--domain lark`) — otherwise the handshake is rejected with error code `1000040351` ("Incorrect domain name"). The default `feishu` is for apps on `open.feishu.cn`.
 
-To build from source instead:
+<details>
+<summary>Developing on the bridge itself? Run from a checkout instead.</summary>
 
 ```bash
-bun install        # or: npm install
-bun run build      # or: npm run build
-node dist/bin/lark-acp.js --help
+git clone https://github.com/wthislifehuh/lark-agent-acp-bridge
+cd lark-agent-acp-bridge
+npm install && npm run build
+node dist/bin/lark-acp.js proxy --agent claude
+# optional: npm link   → makes the bare `lark-acp` command point at this checkout
 ```
+
+</details>
 
 ## CLI reference
 
@@ -455,7 +479,7 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 The package also exports a programmatic API for building on top of:
 
 ```ts
-import { LarkBridge, FileSessionStore } from "@4t145/lark-acp";
+import { LarkBridge, FileSessionStore } from "lark-agent-acp-bridge";
 
 const bridge = new LarkBridge({
   lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
@@ -483,7 +507,7 @@ Main exports:
 
 ## Troubleshooting
 
-**`[ws] code: 1000040351, Incorrect domain name`** — your app lives on Lark International (`open.larksuite.com`) but the bridge is connecting to Feishu (the default). Set `--domain lark`, `credentials.domain: "lark"`, or `LARK_ACP_DOMAIN=lark`. (The reverse also holds: a Feishu app with `domain: "lark"` fails the same way.)
+**`[ws] code: 1000040351, Incorrect domain name`** — your app lives on Lark International (`open.larksuite.com`) but the bridge is connecting to Feishu (the default). Set `--domain lark`, `credentials.domain: "lark"`, or `LARK_ACP_DOMAIN=lark`. (The reverse also holds: a Feishu app with `domain: "lark"` fails the same way.) Note: the upstream `@4t145/lark-acp` npm package does **not** have this setting — make sure you installed **this** package (`lark-agent-acp-bridge`).
 
 **`Failed to initialize agent (...). Is the agent installed?`** — the agent subprocess didn't complete the ACP handshake. The error includes the agent's recent stderr; the usual causes are the CLI not being installed / not on `$PATH`, or not logged in yet. Run the preset's command by hand (e.g. `kiro-cli acp`, `npx -y @zed-industries/claude-code-acp`) to see the raw failure.
 
@@ -491,16 +515,19 @@ Main exports:
 
 **Bot doesn't respond in Feishu** — check, in order: the app version is published and you're inside its availability scope; the event subscription mode is **persistent connection** with `im.message.receive_v1` added; all [permissions](#1-add-permissions) are imported and approved.
 
-## Similar projects
+## Credits & similar projects
 
-1. A Go implementation, also quite complete: <https://github.com/ri-char/Lark-ACP>
-2. Another Node implementation this project was refactored from: <https://github.com/JiaqiZhang-Dev/lark-acp>
+This project is a fork of [4t145/lark-acp](https://github.com/4t145/lark-acp) (which itself was refactored from [JiaqiZhang-Dev/lark-acp](https://github.com/JiaqiZhang-Dev/lark-acp)). Related implementations:
 
-### What this implementation does differently
+1. The original this fork is based on: <https://github.com/4t145/lark-acp>
+2. A Go implementation, also quite complete: <https://github.com/ri-char/Lark-ACP>
+3. Another Node implementation: <https://github.com/JiaqiZhang-Dev/lark-acp>
 
-1. A proxy-level `permissionMode` setting, born out of production experience.
-2. Multiple messages merged into a single card — no message bombing in group chats.
-3. Shipped as a library, ready for second-stage development.
+### What this fork adds on top of the original
+
+1. `kiro` preset (native ACP via `kiro-cli acp`) and the bundled `lark-acp-q` adapter for Amazon Q.
+2. Feishu/Lark region switching (`--domain` / `credentials.domain` / `LARK_ACP_DOMAIN`) — required for apps on Lark International.
+3. Cross-platform (Windows-safe) build, plus assorted fixes and doc overhauls.
 
 ---
 
