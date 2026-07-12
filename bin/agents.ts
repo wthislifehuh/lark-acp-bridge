@@ -77,7 +77,15 @@ export const BUILT_IN_AGENTS: Readonly<Record<string, AgentPreset>> = {
     label: "Kiro CLI",
     command: "kiro-cli",
     args: ["acp"],
-    description: "Kiro CLI (native ACP via `kiro-cli acp`; assumes `kiro-cli` is on $PATH and logged in)",
+    description:
+      "Kiro CLI (native ACP via `kiro-cli acp`; assumes `kiro-cli` is on $PATH and logged in)",
+  },
+  q: {
+    label: "Amazon Q Developer CLI",
+    command: "lark-acp-q",
+    args: [],
+    description:
+      "Amazon Q (`q`) via the bundled ACP adapter; assumes `q` is on $PATH and logged in. Text-only: no per-tool permission cards (Kiro CLI is the native-ACP successor)",
   },
   mock: {
     label: "Mock Agent",
@@ -126,9 +134,7 @@ export function buildRegistry(
       continue;
     }
     if (!patch.command || !patch.label) {
-      throw new Error(
-        `agent preset "${id}" is new and must define both \`label\` and \`command\``,
-      );
+      throw new Error(`agent preset "${id}" is new and must define both \`label\` and \`command\``);
     }
     out.set(id, {
       preset: {
