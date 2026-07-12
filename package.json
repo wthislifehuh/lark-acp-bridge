@@ -12,9 +12,9 @@
     "access": "public"
   },
   "bin": {
-    "lark-acp": "./dist/bin/lark-acp.js",
-    "lark-acp-mock": "./dist/bin/mock-agent.js",
-    "lark-acp-q": "./dist/bin/q-acp.js"
+    "lark-acp": "dist/bin/lark-acp.js",
+    "lark-acp-mock": "dist/bin/mock-agent.js",
+    "lark-acp-q": "dist/bin/q-acp.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
