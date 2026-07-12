@@ -1,9 +1,9 @@
 # lark-acp
 
-[![npm version](https://img.shields.io/npm/v/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
-[![npm downloads](https://img.shields.io/npm/dm/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
-[![node version](https://img.shields.io/node/v/lark-agent-acp-bridge.svg)](https://www.npmjs.com/package/lark-agent-acp-bridge)
-[![license](https://img.shields.io/npm/l/lark-agent-acp-bridge.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/lark-acp-bridge.svg)](https://www.npmjs.com/package/lark-acp-bridge)
+[![npm downloads](https://img.shields.io/npm/dm/lark-acp-bridge.svg)](https://www.npmjs.com/package/lark-acp-bridge)
+[![node version](https://img.shields.io/node/v/lark-acp-bridge.svg)](https://www.npmjs.com/package/lark-acp-bridge)
+[![license](https://img.shields.io/npm/l/lark-acp-bridge.svg)](./LICENSE)
 
 **English** | **[中文](docs/README_CN.md)**
 
@@ -63,9 +63,9 @@ For real-world use we strongly recommend pairing this with the [Lark CLI](https:
 **1. Install** (no git clone needed):
 
 ```bash
-npm i -g lark-agent-acp-bridge
+npm i -g lark-acp-bridge
 # or straight from GitHub (builds on install):
-npm i -g github:wthislifehuh/lark-agent-acp-bridge
+npm i -g github:wthislifehuh/lark-acp-bridge
 ```
 
 Either one puts the `lark-acp` command on your `$PATH` — every example in this README uses it.
@@ -103,8 +103,8 @@ Then find the bot in Feishu/Lark — DM it, or add it to a group and @mention it
 <summary>Developing on the bridge itself? Run from a checkout instead.</summary>
 
 ```bash
-git clone https://github.com/wthislifehuh/lark-agent-acp-bridge
-cd lark-agent-acp-bridge
+git clone https://github.com/wthislifehuh/lark-acp-bridge
+cd lark-acp-bridge
 npm install && npm run build
 node dist/bin/lark-acp.js proxy --agent claude
 # optional: npm link   → makes the bare `lark-acp` command point at this checkout
@@ -479,7 +479,7 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 The package also exports a programmatic API for building on top of:
 
 ```ts
-import { LarkBridge, FileSessionStore } from "lark-agent-acp-bridge";
+import { LarkBridge, FileSessionStore } from "lark-acp-bridge";
 
 const bridge = new LarkBridge({
   lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
@@ -507,7 +507,7 @@ Main exports:
 
 ## Troubleshooting
 
-**`[ws] code: 1000040351, Incorrect domain name`** — your app lives on Lark International (`open.larksuite.com`) but the bridge is connecting to Feishu (the default). Set `--domain lark`, `credentials.domain: "lark"`, or `LARK_ACP_DOMAIN=lark`. (The reverse also holds: a Feishu app with `domain: "lark"` fails the same way.) Note: the upstream `@4t145/lark-acp` npm package does **not** have this setting — make sure you installed **this** package (`lark-agent-acp-bridge`).
+**`[ws] code: 1000040351, Incorrect domain name`** — your app lives on Lark International (`open.larksuite.com`) but the bridge is connecting to Feishu (the default). Set `--domain lark`, `credentials.domain: "lark"`, or `LARK_ACP_DOMAIN=lark`. (The reverse also holds: a Feishu app with `domain: "lark"` fails the same way.) Note: the upstream `@4t145/lark-acp` npm package does **not** have this setting — make sure you installed **this** package (`lark-acp-bridge`).
 
 **`Failed to initialize agent (...). Is the agent installed?`** — the agent subprocess didn't complete the ACP handshake. The error includes the agent's recent stderr; the usual causes are the CLI not being installed / not on `$PATH`, or not logged in yet. Run the preset's command by hand (e.g. `kiro-cli acp`, `npx -y @zed-industries/claude-code-acp`) to see the raw failure.
 

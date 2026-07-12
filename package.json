@@ -1,5 +1,5 @@
 {
-  "name": "lark-agent-acp-bridge",
+  "name": "lark-acp-bridge",
   "version": "0.1.4",
   "description": "Bridge Feishu/Lark to any ACP-compatible AI agent (Claude Code, Kiro, Gemini, Amazon Q, ...)",
   "type": "module",
@@ -52,11 +52,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wthislifehuh/lark-agent-acp-bridge.git"
+    "url": "git+https://github.com/wthislifehuh/lark-acp-bridge.git"
   },
-  "homepage": "https://github.com/wthislifehuh/lark-agent-acp-bridge#readme",
+  "homepage": "https://github.com/wthislifehuh/lark-acp-bridge#readme",
   "bugs": {
-    "url": "https://github.com/wthislifehuh/lark-agent-acp-bridge/issues"
+    "url": "https://github.com/wthislifehuh/lark-acp-bridge/issues"
   },
   "author": "JOEEE",
   "license": "MIT",
