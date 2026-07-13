@@ -18,7 +18,7 @@
 实际使用强烈建议配合[飞书cli](https://github.com/larksuite/cli)与其skill一起使用，本桥阶层会把会话信息注入上下文，通过飞书cli可以衔接各种飞书操作。
 
 <p align="center">
-  <img src="mock-example.png" alt="lark-acp 在飞书里的演示卡片" width="640">
+  <img src="https://raw.githubusercontent.com/wthislifehuh/lark-acp-bridge/main/docs/mock-example.jpg" alt="lark-acp 在飞书里的演示卡片" width="640">
 </p>
 
 ---
