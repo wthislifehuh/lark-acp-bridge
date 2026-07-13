@@ -1,4 +1,4 @@
-# lark-acp
+# lark-acp-bridge
 
 [![npm version](https://img.shields.io/npm/v/lark-acp-bridge.svg)](https://www.npmjs.com/package/lark-acp-bridge)
 [![npm downloads](https://img.shields.io/npm/dm/lark-acp-bridge.svg)](https://www.npmjs.com/package/lark-acp-bridge)
@@ -20,7 +20,7 @@ You send a message in Feishu/Lark; the agent runs on your machine; its thinking,
 For real-world use we strongly recommend pairing this with the [Lark CLI](https://github.com/larksuite/cli) and its skills — the bridge injects chat context (chat id, sender name, group name) into the prompt, so the agent can chain into all kinds of Lark operations through the Lark CLI.
 
 <p align="center">
-  <img src="docs/mock-example.png" alt="lark-acp demo — an AI agent streaming thoughts, tool calls and results into an interactive Feishu/Lark card" width="640">
+  <img src="docs/mock-example.jpg" alt="lark-acp demo — an AI agent streaming thoughts, tool calls and results into an interactive Feishu/Lark card" width="640">
 </p>
 
 ## Contents
