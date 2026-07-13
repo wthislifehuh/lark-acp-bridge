@@ -1,15 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import type { SessionRecord, SessionStore } from "./session-store.js";
 
 const SESSIONS_FILE_NAME = "sessions.json";
 
-/** Pre-multi-session legacy on-disk shape. */
-interface LegacyRecord {
-  sessionId: string;
-  cwd: string;
-  updatedAt: number;
-}
+const sessionRecordSchema: z.ZodType<SessionRecord> = z.object({
+  chatId: z.string(),
+  sessionId: z.string(),
+  label: z.string().optional(),
+  agentCommand: z.string(),
+  agentArgs: z.array(z.string()),
+  cwd: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+/** Pre-multi-session legacy on-disk shape: one bare record per chat. */
+const legacyRecordSchema = z.object({
+  sessionId: z.string(),
+  cwd: z.string(),
+  updatedAt: z.number(),
+});
 
 /**
  * JSON-file backed {@link SessionStore}. Writes are coalesced via
@@ -24,9 +36,13 @@ export class FileSessionStore implements SessionStore {
     this.filePath = path.join(storageDir, SESSIONS_FILE_NAME);
   }
 
-  async init(): Promise<void> {
+  // The SessionStore interface is async for the sake of database-backed
+  // implementations; this file-backed one is fully synchronous, so methods
+  // return already-resolved promises instead of being `async`.
+
+  init(): Promise<void> {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    if (!fs.existsSync(this.filePath)) return;
+    if (!fs.existsSync(this.filePath)) return Promise.resolve();
 
     let parsed: unknown;
     try {
@@ -34,50 +50,62 @@ export class FileSessionStore implements SessionStore {
       parsed = JSON.parse(raw);
     } catch {
       // Corrupt file — treat as empty rather than crashing.
-      return;
+      return Promise.resolve();
     }
 
-    if (!parsed || typeof parsed !== "object") return;
+    const topLevel = z.record(z.string(), z.unknown()).safeParse(parsed);
+    if (!topLevel.success) return Promise.resolve();
 
-    const record = parsed as Record<string, unknown>;
-    const firstValue = Object.values(record)[0];
-
-    const isLegacy =
-      firstValue !== undefined &&
-      typeof firstValue === "object" &&
-      firstValue !== null &&
-      "sessionId" in (firstValue as Record<string, unknown>) &&
-      !("chatId" in (firstValue as Record<string, unknown>));
-
-    if (isLegacy) {
-      this.migrateLegacy(record as Record<string, LegacyRecord>);
-      return;
-    }
-
-    for (const [chatId, entries] of Object.entries(record)) {
-      if (Array.isArray(entries)) {
-        this.data.set(chatId, entries as SessionRecord[]);
+    // Entries are validated individually and invalid ones skipped, so one
+    // malformed record (hand edit, older version) doesn't wipe the rest.
+    let migratedLegacy = false;
+    for (const [chatId, value] of Object.entries(topLevel.data)) {
+      if (Array.isArray(value)) {
+        const records = value.flatMap((entry): SessionRecord[] => {
+          const result = sessionRecordSchema.safeParse(entry);
+          return result.success ? [result.data] : [];
+        });
+        if (records.length > 0) this.data.set(chatId, records);
+        continue;
       }
+
+      const legacy = legacyRecordSchema.safeParse(value);
+      if (!legacy.success) continue;
+      this.data.set(chatId, [
+        {
+          chatId,
+          sessionId: legacy.data.sessionId,
+          agentCommand: "",
+          agentArgs: [],
+          cwd: legacy.data.cwd,
+          createdAt: legacy.data.updatedAt,
+          updatedAt: legacy.data.updatedAt,
+        },
+      ]);
+      migratedLegacy = true;
     }
+    if (migratedLegacy) this.scheduleFlush();
+    return Promise.resolve();
   }
 
-  async close(): Promise<void> {
-    // No persistent handles — writes are synchronous.
+  close(): Promise<void> {
+    if (this.flushScheduled) this.flush();
+    return Promise.resolve();
   }
 
-  async listByChat(chatId: string): Promise<readonly SessionRecord[]> {
+  listByChat(chatId: string): Promise<readonly SessionRecord[]> {
     const records = this.data.get(chatId);
-    if (!records) return [];
-    return [...records].sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!records) return Promise.resolve([]);
+    return Promise.resolve([...records].sort((a, b) => b.updatedAt - a.updatedAt));
   }
 
-  async getLatest(chatId: string): Promise<SessionRecord | null> {
+  getLatest(chatId: string): Promise<SessionRecord | null> {
     const records = this.data.get(chatId);
-    if (!records?.length) return null;
-    return records.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b));
+    if (!records?.length) return Promise.resolve(null);
+    return Promise.resolve(records.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b)));
   }
 
-  async save(record: SessionRecord): Promise<void> {
+  save(record: SessionRecord): Promise<void> {
     let records = this.data.get(record.chatId);
     if (!records) {
       records = [];
@@ -87,45 +115,37 @@ export class FileSessionStore implements SessionStore {
     if (idx >= 0) records[idx] = record;
     else records.push(record);
     this.scheduleFlush();
+    return Promise.resolve();
   }
 
-  async delete(chatId: string, sessionId: string): Promise<void> {
+  delete(chatId: string, sessionId: string): Promise<void> {
     const records = this.data.get(chatId);
-    if (!records) return;
+    if (!records) return Promise.resolve();
     const idx = records.findIndex((r) => r.sessionId === sessionId);
-    if (idx < 0) return;
+    if (idx < 0) return Promise.resolve();
     records.splice(idx, 1);
     if (!records.length) this.data.delete(chatId);
     this.scheduleFlush();
+    return Promise.resolve();
   }
 
   private scheduleFlush(): void {
     if (this.flushScheduled) return;
     this.flushScheduled = true;
     setImmediate(() => {
-      this.flushScheduled = false;
-      const obj: Record<string, SessionRecord[]> = {};
-      for (const [chatId, records] of this.data) {
-        obj[chatId] = records;
-      }
-      fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2), "utf-8");
+      this.flush();
     });
   }
 
-  private migrateLegacy(legacy: Record<string, LegacyRecord>): void {
-    for (const [oldKey, val] of Object.entries(legacy)) {
-      this.data.set(oldKey, [
-        {
-          chatId: oldKey,
-          sessionId: val.sessionId,
-          agentCommand: "",
-          agentArgs: [],
-          cwd: val.cwd,
-          createdAt: val.updatedAt,
-          updatedAt: val.updatedAt,
-        },
-      ]);
+  /** Write the in-memory state to disk via tmp-file + rename, guarding against a crash mid-write. */
+  private flush(): void {
+    this.flushScheduled = false;
+    const obj: Record<string, SessionRecord[]> = {};
+    for (const [chatId, records] of this.data) {
+      obj[chatId] = records;
     }
-    this.scheduleFlush();
+    const tmpPath = `${this.filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), "utf-8");
+    fs.renameSync(tmpPath, this.filePath);
   }
 }

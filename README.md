@@ -99,6 +99,8 @@ Then find the bot in Feishu/Lark — DM it, or add it to a group and @mention it
 
 > ⚠️ **Region matters**: if your app was created on **Lark International** (`open.larksuite.com`), set `"domain": "lark"` in the config (or pass `--domain lark`) — otherwise the handshake is rejected with error code `1000040351` ("Incorrect domain name"). The default `feishu` is for apps on `open.feishu.cn`.
 
+> 🖱️ **On Windows and don't want to use a terminal?** [`windows/`](windows/) has a double-click `.bat` launcher per preset (`run-claude.bat`, `run-kiro.bat`, `run-q.bat`, …) — see [`windows/README.md`](windows/README.md).
+
 <details>
 <summary>Developing on the bridge itself? Run from a checkout instead.</summary>
 
@@ -335,11 +337,76 @@ Example — pin the model and only trust read-only tools:
 }
 ```
 
-> **Windows note**: the Amazon Q CLI itself does not run natively on Windows — it needs WSL / Linux / macOS. On a Windows host, run the whole bridge inside WSL (`lark-acp proxy --agent q`), where `q` is installed and logged in.
-
-**Testing without a real `q`**: the repo's test suite drives the adapter end-to-end over real ACP against a fake `q` — run `npm test` (builds first, then vitest: unit tests for the adapter core plus a blackbox e2e in `tests/`).
-
 > **Want per-tool authorization and the full thought/tool timeline?** Kiro CLI is Amazon Q's official successor with native ACP — just use `--agent kiro` (see <https://kiro.dev/docs/cli/acp/>).
+
+#### Windows note: `q` needs WSL
+
+The Amazon Q Developer CLI has **no native Windows build** — it only ships for Linux/macOS/WSL. There's no `apt`/`snap` package for it either (those names collide with unrelated tools); it installs from AWS's own release zip. On a Windows host, install and run `q` **inside WSL**:
+
+```bash
+# inside a WSL shell (Ubuntu 22.04+ recommended — needs glibc ≥ 2.34)
+sudo apt-get update && sudo apt-get install -y unzip
+curl --proto '=https' --tlsv1.2 -sSf \
+  "https://desktop-release.q.us-east-1.amazonaws.com/latest/q-x86_64-linux.zip" -o q.zip
+unzip q.zip && ./q/install.sh
+source ~/.bashrc   # required — the installer edits ~/.bashrc, but the *current* shell already loaded its PATH before that edit
+q login            # pick "Use for Free with Builder ID", confirm the device code in a browser
+q whoami           # sanity check
+```
+
+**Do you have to manually open a WSL terminal every time?** `q` itself must run under Linux, but you don't have to babysit a terminal window for it — run the whole bridge process inside WSL and just trigger that from Windows in one shot. [`windows/run-q.bat`](windows/run-q.bat) does exactly this: double-click it instead of opening WSL by hand. It resolves the repo's WSL path automatically (works regardless of username/distro name) and shells in via `bash -lc`, which matters because a plain `wsl.exe q ...` often can't find `q` — only a _login_ shell sources `~/.bashrc`'s PATH edit, the same reason the very first `q` command failed in your own terminal. See [`windows/README.md`](windows/README.md) for this and one-click launchers for every other preset. For something more permanent than a batch file, run it under WSL's `systemd` (most modern WSL distros have it enabled) or `pm2`, same as any other long-lived Linux service — see the systemd example further down, just run it from inside WSL.
+
+#### Testing the Amazon Q integration
+
+Five layers, cheapest/fastest first — each isolates a different part of the stack, so a failure tells you exactly where to look:
+
+**0. Automated, no `q`, no Feishu — works on Windows directly.** The suite drives the built adapter end-to-end over real ACP against a fake `q` binary:
+
+```bash
+npm test   # builds first (pretest), then vitest: unit tests + blackbox e2e in tests/
+```
+
+**1. Real `q`, standalone, no adapter (in WSL).** Confirms `q` itself accepts what the adapter will send it:
+
+```bash
+q chat --no-interactive --trust-all-tools --wrap never -- "用一句话介绍你自己"
+```
+
+**2. Adapter + real `q`, no Feishu (in WSL).** Isolates adapter↔`q` issues from Feishu entirely — pipe raw ACP JSON-RPC lines into the adapter's stdin by hand:
+
+```bash
+node dist/bin/q-acp.js
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/you","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"<sessionId from the id:2 response>","prompt":[{"type":"text","text":"hello"}]}}
+```
+
+You should see streamed `session/update` notifications followed by `{"stopReason":"end_turn"}`.
+
+**3. Bridge + mock agent + real Feishu (validates your Feishu app, no `q` needed).** Set up credentials per [Feishu/Lark developer console setup](#feishulark-developer-console-setup), then:
+
+```bash
+lark-acp proxy --agent mock
+```
+
+DM the bot in Feishu/Lark — you should get the scripted card with thoughts / tool calls / a permission button. This proves the Feishu side independently of Amazon Q.
+
+**4. The real thing — bridge + `q` (inside WSL).**
+
+```bash
+lark-acp proxy --agent q
+```
+
+If running from a raw checkout (no `npm link` / global install yet), `lark-acp-q` won't be on `$PATH`, so point at it directly instead:
+
+```bash
+node dist/bin/lark-acp.js proxy -- node ./dist/bin/q-acp.js
+```
+
+In Feishu, check off in order: ① a reply card streams in; ② a follow-up question shows it remembered turn 1 (context replay working); ③ the cancel button interrupts a long answer; ④ restart the bridge, then message again — the session resumes from the persisted transcript; ⑤ `q logout` then message — you should get an "Authentication required" failure card rather than a generic crash.
 
 ## Feishu/Lark developer console setup
 

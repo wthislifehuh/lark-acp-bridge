@@ -47,4 +47,4 @@ export {
   isLarkDomainName,
   resolveLarkDomain,
 } from "./lark/domain.js";
-export type { LarkDomainName } from "./lark/domain.js";
+export type { LarkDomainName, LarkDomainInput } from "./lark/domain.js";

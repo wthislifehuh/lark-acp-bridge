@@ -97,8 +97,8 @@ class MockAgent implements acp.Agent {
     this.connection = connection;
   }
 
-  async initialize(_params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
-    return {
+  initialize(_params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+    return Promise.resolve({
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
         loadSession: false,
@@ -108,27 +108,26 @@ class MockAgent implements acp.Agent {
           embeddedContext: false,
         },
       },
-    };
+    });
   }
 
-  async newSession(_params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
+  newSession(_params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomSessionId();
     this.sessions.set(sessionId, { pendingPrompt: null });
-    return { sessionId };
+    return Promise.resolve({ sessionId });
   }
 
-  async authenticate(_params: acp.AuthenticateRequest): Promise<acp.AuthenticateResponse> {
-    return {};
+  authenticate(_params: acp.AuthenticateRequest): Promise<acp.AuthenticateResponse> {
+    return Promise.resolve({});
   }
 
-  async setSessionMode(
-    _params: acp.SetSessionModeRequest,
-  ): Promise<acp.SetSessionModeResponse | void> {
-    return {};
+  setSessionMode(_params: acp.SetSessionModeRequest): Promise<acp.SetSessionModeResponse> {
+    return Promise.resolve({});
   }
 
-  async cancel(params: acp.CancelNotification): Promise<void> {
+  cancel(params: acp.CancelNotification): Promise<void> {
     this.sessions.get(params.sessionId)?.pendingPrompt?.abort();
+    return Promise.resolve();
   }
 
   async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {

@@ -91,7 +91,7 @@ function buildOptions(level?: string): LoggerOptions {
  * - Level resolution: explicit arg → `LOG_LEVEL` env → `"info"`.
  */
 export function createPinoLogger(level?: string): LarkLogger {
-  return pino(buildOptions(level)) as unknown as LarkLogger;
+  return pino(buildOptions(level));
 }
 
 /**
@@ -110,11 +110,21 @@ export function adaptToSdkLogger(logger: LarkLogger): LarkSdkLogger {
       .map((part) => (typeof part === "string" ? part : JSON.stringify(part)))
       .join(" ");
   return {
-    error: (...msg) => logger.error(join(msg)),
-    warn: (...msg) => logger.warn(join(msg)),
-    info: (...msg) => logger.info(join(msg)),
-    debug: (...msg) => logger.debug(join(msg)),
-    trace: (...msg) => logger.debug(join(msg)),
+    error: (...msg) => {
+      logger.error(join(msg));
+    },
+    warn: (...msg) => {
+      logger.warn(join(msg));
+    },
+    info: (...msg) => {
+      logger.info(join(msg));
+    },
+    debug: (...msg) => {
+      logger.debug(join(msg));
+    },
+    trace: (...msg) => {
+      logger.debug(join(msg));
+    },
   };
 }
 

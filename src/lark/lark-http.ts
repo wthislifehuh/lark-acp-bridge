@@ -1,6 +1,6 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { LarkLogger } from "../logger/logger.js";
-import { resolveLarkDomain, type LarkDomainName } from "./domain.js";
+import { resolveLarkDomain, type LarkDomainInput } from "./domain.js";
 
 const REACTION_THINKING = "THINKING";
 
@@ -17,7 +17,7 @@ export interface LarkHttpOptions {
    * Defaults to the SDK's Feishu domain when omitted; set `"lark"` for
    * apps on Lark International.
    */
-  domain?: LarkDomainName | string;
+  domain?: LarkDomainInput;
   logger: LarkLogger;
 }
 
@@ -72,7 +72,7 @@ export class LarkHttpClient {
     const res = await this.client.request<{ bot?: { open_id?: string } }>({
       url: BOT_INFO_URL,
     });
-    const openId = res?.bot?.open_id;
+    const openId = res.bot?.open_id;
     if (typeof openId !== "string" || openId.length === 0) {
       throw new Error(`bot/v3/info returned no open_id (payload: ${JSON.stringify(res)})`);
     }
@@ -232,8 +232,11 @@ export class LarkHttpClient {
     const headers = res.headers as Record<string, string | string[] | undefined> | undefined;
     const raw = headers?.["content-type"];
     const headerValue = Array.isArray(raw) ? raw[0] : raw;
-    // strip charset / boundary suffix, e.g. "image/png; charset=utf-8"
-    const mimeType = headerValue?.split(";")[0]?.trim() || sniffImageMime(bytes);
+    // strip charset / boundary suffix, e.g. "image/png; charset=utf-8";
+    // an absent OR empty header both fall back to magic-byte sniffing
+    const parsedMime = headerValue?.split(";")[0]?.trim();
+    const mimeType =
+      parsedMime !== undefined && parsedMime !== "" ? parsedMime : sniffImageMime(bytes);
 
     return { bytes, mimeType };
   }

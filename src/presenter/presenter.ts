@@ -2,12 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 
 /** Status chip rendered in the unified card header. */
 export type AgentStatus =
-  | "thinking"
-  | "calling_tool"
-  | "responding"
-  | "complete"
-  | "cancelled"
-  | "failed";
+  "thinking" | "calling_tool" | "responding" | "complete" | "cancelled" | "failed";
 
 /** Tool execution status — mirrors ACP's `tool_call` lifecycle. */
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -116,6 +111,12 @@ export interface LarkPresenter {
    */
   sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null>;
 
-  /** Patch an existing unified card with a new state. */
+  /**
+   * Patch an existing unified card with a new state.
+   *
+   * @throws when the underlying transport rejects (e.g. the card JSON
+   *         exceeds Lark's size limit) — callers decide whether to retry,
+   *         ignore, or fall back to {@link replyText}.
+   */
   updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void>;
 }

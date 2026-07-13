@@ -28,7 +28,7 @@ export interface SpawnAgentOptions {
 interface SpawnInternal {
   proc: ChildProcess;
   connection: acp.ClientSideConnection;
-  initResult: Awaited<ReturnType<acp.ClientSideConnection["initialize"]>>;
+  initResult: acp.InitializeResponse;
   getRecentStderr: () => readonly string[];
 }
 
@@ -42,7 +42,7 @@ interface SpawnInternal {
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<AgentProcess> {
   const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
 
-  let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
+  let sessionResult: acp.NewSessionResponse;
   try {
     sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers: [] });
   } catch (err) {
@@ -54,7 +54,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<AgentProcess>
     process: proc,
     connection,
     sessionId: sessionResult.sessionId,
-    capabilities: (initResult.agentCapabilities ?? {}) as Record<string, unknown>,
+    capabilities: initResult.agentCapabilities ?? {},
     getRecentStderr,
   };
 }
@@ -83,7 +83,7 @@ export async function spawnAndResumeAgent(
   if (hasResume || hasLoad) {
     try {
       if (hasResume) {
-        await connection.unstable_resumeSession({
+        await connection.resumeSession({
           sessionId: previousSessionId,
           cwd: opts.cwd,
           mcpServers: [],
@@ -114,7 +114,7 @@ export async function spawnAndResumeAgent(
     }
   }
 
-  let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
+  let sessionResult: acp.NewSessionResponse;
   try {
     sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers: [] });
   } catch (err) {
@@ -148,7 +148,7 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
 
   const stderrBuffer: string[] = [];
   let stderrCarry = "";
-  proc.stderr?.on("data", (chunk: Buffer) => {
+  proc.stderr.on("data", (chunk: Buffer) => {
     stderrCarry += chunk.toString();
     const parts = stderrCarry.split("\n");
     stderrCarry = parts.pop() ?? "";
@@ -161,7 +161,9 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
     }
   });
 
-  proc.on("error", (err) => logger.error({ err }, "agent process error"));
+  proc.on("error", (err) => {
+    logger.error({ err }, "agent process error");
+  });
   proc.on("exit", (code, signal) => {
     if (code === 0 || code === null) {
       logger.info({ code, signal }, "agent process exited");
@@ -173,13 +175,13 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
   const getRecentStderr = (): readonly string[] => [...stderrBuffer];
 
   // Non-null asserted: stdio: STDIO_PIPED guarantees pipe streams exist.
-  const input = Writable.toWeb(proc.stdin!);
-  const output = Readable.toWeb(proc.stdout!);
+  const input = Writable.toWeb(proc.stdin);
+  const output = Readable.toWeb(proc.stdout);
   const stream = acp.ndJsonStream(input, output);
 
   const connection = new acp.ClientSideConnection(() => client, stream);
 
-  let initResult: Awaited<ReturnType<typeof connection.initialize>>;
+  let initResult: acp.InitializeResponse;
   try {
     initResult = await connection.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,

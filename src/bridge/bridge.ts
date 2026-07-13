@@ -2,7 +2,7 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
-import type { LarkDomainName } from "../lark/domain.js";
+import type { LarkDomainInput } from "../lark/domain.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
 import {
@@ -80,7 +80,7 @@ export interface LarkBridgeLarkOptions {
    * International must set `"lark"` or the server rejects the connection
    * with code `1000040351` ("Incorrect domain name").
    */
-  domain?: LarkDomainName | string;
+  domain?: LarkDomainInput;
 }
 
 export interface LarkBridgeAgentOptions {
@@ -204,36 +204,56 @@ export class LarkBridge {
   /**
    * Initialise the session store and open the Lark WebSocket subscription.
    *
-   * @throws when the session store fails to initialise.
+   * @throws when the session store fails to initialise, or the WebSocket
+   *         connection fails to establish (bad credentials, network error).
    */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
 
-    await this.sessionStore.init();
+    try {
+      await this.sessionStore.init();
 
-    this.cleanupTimer = setInterval(() => this.evictIdle(), IDLE_CLEANUP_INTERVAL_MS);
-    this.cleanupTimer.unref();
+      this.cleanupTimer = setInterval(() => {
+        this.evictIdle();
+      }, IDLE_CLEANUP_INTERVAL_MS);
+      this.cleanupTimer.unref();
 
-    this.ws = new LarkWsConnection({
-      appId: this.lark.appId,
-      appSecret: this.lark.appSecret,
-      ...(this.lark.domain !== undefined ? { domain: this.lark.domain } : {}),
-      logger: this.logger,
-      onMessage: (event) => this.handleMessage(event),
-      onCardAction: (event) => this.handleCardAction(event),
-    });
-    this.ws.start();
+      this.ws = new LarkWsConnection({
+        appId: this.lark.appId,
+        appSecret: this.lark.appSecret,
+        ...(this.lark.domain !== undefined ? { domain: this.lark.domain } : {}),
+        logger: this.logger,
+        onMessage: (event) => {
+          this.handleMessage(event);
+        },
+        onCardAction: (event) => {
+          this.handleCardAction(event);
+        },
+      });
+      await this.ws.start();
+    } catch (err) {
+      if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+      this.ws = null;
+      this.started = false;
+      throw err;
+    }
 
     this.logger.info("bridge started");
   }
 
   async stop(): Promise<void> {
+    if (!this.started) return;
     this.logger.info("stopping bridge");
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.cleanupTimer = null;
+    this.ws?.stop();
+    this.ws = null;
     for (const runtime of this.chats.values()) runtime.shutdown();
     this.chats.clear();
     await this.sessionStore.close();
+    this.started = false;
     this.logger.info("bridge stopped");
   }
 
@@ -255,9 +275,9 @@ export class LarkBridge {
 
     this.logger.info({ userId, chatId, messageType: message.message_type }, "message received");
 
-    this.routeMessage(event, userId, messageId, chatId).catch((err) =>
-      this.logger.error({ err, chatId }, "routeMessage failed"),
-    );
+    this.routeMessage(event, userId, messageId, chatId).catch((err: unknown) => {
+      this.logger.error({ err, chatId }, "routeMessage failed");
+    });
   }
 
   private async routeMessage(
@@ -280,7 +300,7 @@ export class LarkBridge {
         this.logger.warn({ err, chatId }, "getBotOpenId failed — skipping group message");
         return;
       }
-      const mentioned = message.mentions?.some((m) => m.id?.open_id === botOpenId);
+      const mentioned = message.mentions?.some((m) => m.id.open_id === botOpenId);
       if (!mentioned) {
         this.logger.debug({ chatId }, "skipping group message — bot not mentioned");
         return;
@@ -339,20 +359,23 @@ export class LarkBridge {
     messageId: string,
     prompt: acp.ContentBlock[],
   ): Promise<void> {
-    const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
-    const [userName, chatName] = await Promise.all([
-      this.http.getUserName(userId),
-      isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
-    ]);
-
-    const context = isGroup
-      ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
-      : `[上下文: 用户 ${userName} (${userId}) 的私聊消息]`;
-
-    prompt.unshift({ type: "text", text: context });
-
     const runtime = this.acquireRuntime(chatId);
-    const pending: PendingMessage = { prompt, messageId, chatId };
+
+    if (runtime.needsContext(userId)) {
+      const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
+      const [userName, chatName] = await Promise.all([
+        this.http.getUserName(userId),
+        isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
+      ]);
+
+      const context = isGroup
+        ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
+        : `[上下文: 用户 ${userName} (${userId}) 的私聊消息]`;
+
+      prompt.unshift({ type: "text", text: context });
+    }
+
+    const pending: PendingMessage = { prompt, messageId, chatId, userId };
     try {
       await runtime.enqueue(pending);
     } catch (err) {
@@ -362,9 +385,9 @@ export class LarkBridge {
       this.chats.delete(chatId);
       this.logger.error({ err, chatId }, "agent bootstrap failed");
       const summary = `⚠️ Agent 启动失败: ${formatBootstrapError(err)}`;
-      await this.presenter
-        .replyText(messageId, summary)
-        .catch((sendErr) => this.logger.warn({ err: sendErr }, "bootstrap error reply failed"));
+      await this.presenter.replyText(messageId, summary).catch((sendErr: unknown) => {
+        this.logger.warn({ err: sendErr }, "bootstrap error reply failed");
+      });
     }
   }
 
@@ -413,9 +436,9 @@ export class LarkBridge {
       return;
     }
     this.logger.info({ chatId }, "cancel button clicked");
-    runtime
-      .cancel()
-      .catch((err) => this.logger.warn({ err, chatId }, "cancel via card button failed"));
+    runtime.cancel().catch((err: unknown) => {
+      this.logger.warn({ err, chatId }, "cancel via card button failed");
+    });
   }
 
   private handlePermissionCardAction(
@@ -434,9 +457,9 @@ export class LarkBridge {
     if (!handled) {
       this.logger.info({ chatId, requestId }, "orphan card action — patching as expired");
       if (messageId) {
-        this.presenter
-          .expirePermissionCard(messageId, ORPHAN_CARD_REASON)
-          .catch((err) => this.logger.warn({ err }, "expirePermissionCard failed"));
+        this.presenter.expirePermissionCard(messageId, ORPHAN_CARD_REASON).catch((err: unknown) => {
+          this.logger.warn({ err }, "expirePermissionCard failed");
+        });
       }
       return;
     }
@@ -446,7 +469,9 @@ export class LarkBridge {
     if (messageId && optionName && toolKind && toolTitle) {
       this.presenter
         .updatePermissionCard(messageId, toolKind, toolTitle, optionName)
-        .catch((err) => this.logger.warn({ err }, "updatePermissionCard failed"));
+        .catch((err: unknown) => {
+          this.logger.warn({ err }, "updatePermissionCard failed");
+        });
     }
   }
 
