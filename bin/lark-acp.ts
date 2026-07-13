@@ -36,7 +36,7 @@ import {
   DEFAULT_LARK_DOMAIN,
   isLarkDomainName,
 } from "../src/index.js";
-import type { LarkLogger, PermissionMode, LarkDomainName } from "../src/index.js";
+import type { LarkLogger, PermissionMode, LarkDomainInput } from "../src/index.js";
 import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
 
 // Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
@@ -62,14 +62,14 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 
 /** $XDG_CONFIG_HOME/lark-acp, falling back to ~/.config/lark-acp. */
 function defaultConfigDir(): string {
-  const xdg = process.env["XDG_CONFIG_HOME"];
+  const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".config", APP_NAME);
 }
 
 /** $XDG_DATA_HOME/lark-acp, falling back to ~/.local/share/lark-acp. */
 function defaultDataDir(): string {
-  const xdg = process.env["XDG_DATA_HOME"];
+  const xdg = process.env.XDG_DATA_HOME;
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".local", "share", APP_NAME);
 }
@@ -88,14 +88,14 @@ function envDataDirOverride(): string | undefined {
 
 // ---------- config file schema -------------------------------------------
 
-type FileCredentials = {
+interface FileCredentials {
   readonly appId?: string;
   readonly appSecret?: string;
   /** Deployment region name or custom base URL; see {@link validateDomain}. */
   readonly domain?: string;
-};
+}
 
-type FileRuntime = {
+interface FileRuntime {
   readonly cwd?: string;
   readonly idleTimeoutMinutes?: number;
   readonly maxChats?: number;
@@ -103,14 +103,14 @@ type FileRuntime = {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
-};
+}
 
-type FileConfig = {
+interface FileConfig {
   readonly credentials: FileCredentials;
   readonly dataDir?: string;
   readonly runtime: FileRuntime;
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
-};
+}
 
 const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {} };
 
@@ -171,7 +171,7 @@ function isPermissionMode(value: string): value is PermissionMode {
  *
  * @throws {CliError} when `value` is neither a known region nor a URL.
  */
-function validateDomain(label: string, value: string): LarkDomainName | string {
+function validateDomain(label: string, value: string): LarkDomainInput {
   if (isLarkDomainName(value)) return value;
   if (isHttpUrl(value)) return value;
   throw new CliError(
@@ -209,12 +209,12 @@ function readConfigFile(filePath: string): FileConfig {
   const root = asObjectOpt("(root)", parsed);
   if (!root) throw new CliError(`config file ${filePath} must contain a JSON object`);
 
-  const credentialsObj = asObjectOpt("credentials", root["credentials"]) ?? {};
-  const runtimeObj = asObjectOpt("runtime", root["runtime"]) ?? {};
+  const credentialsObj = asObjectOpt("credentials", root.credentials) ?? {};
+  const runtimeObj = asObjectOpt("runtime", root.runtime) ?? {};
 
-  const appIdField = asStringOpt("credentials.appId", credentialsObj["appId"]);
-  const appSecretField = asStringOpt("credentials.appSecret", credentialsObj["appSecret"]);
-  const domainField = asStringOpt("credentials.domain", credentialsObj["domain"]);
+  const appIdField = asStringOpt("credentials.appId", credentialsObj.appId);
+  const appSecretField = asStringOpt("credentials.appSecret", credentialsObj.appSecret);
+  const domainField = asStringOpt("credentials.domain", credentialsObj.domain);
   const credentials: FileCredentials = {
     ...(appIdField !== undefined ? { appId: appIdField } : {}),
     ...(appSecretField !== undefined ? { appSecret: appSecretField } : {}),
@@ -223,31 +223,28 @@ function readConfigFile(filePath: string): FileConfig {
       : {}),
   };
 
-  const permissionMode = asPermissionModeOpt(
-    "runtime.permissionMode",
-    runtimeObj["permissionMode"],
-  );
+  const permissionMode = asPermissionModeOpt("runtime.permissionMode", runtimeObj.permissionMode);
 
   const runtime: FileRuntime = {
-    ...optStringField("runtime.cwd", runtimeObj["cwd"]),
+    ...optStringField("runtime.cwd", runtimeObj.cwd),
     ...optNumberField(
       "runtime.idleTimeoutMinutes",
-      asNonNegIntOpt("runtime.idleTimeoutMinutes", runtimeObj["idleTimeoutMinutes"]),
+      asNonNegIntOpt("runtime.idleTimeoutMinutes", runtimeObj.idleTimeoutMinutes),
       "idleTimeoutMinutes",
     ),
     ...optNumberField(
       "runtime.maxChats",
-      asPositiveIntOpt("runtime.maxChats", runtimeObj["maxChats"]),
+      asPositiveIntOpt("runtime.maxChats", runtimeObj.maxChats),
       "maxChats",
     ),
-    ...optBoolField("runtime.hideThoughts", runtimeObj["hideThoughts"]),
-    ...optBoolField("runtime.hideTools", runtimeObj["hideTools"]),
-    ...optBoolField("runtime.hideCancelButton", runtimeObj["hideCancelButton"]),
+    ...optBoolField("runtime.hideThoughts", runtimeObj.hideThoughts),
+    ...optBoolField("runtime.hideTools", runtimeObj.hideTools),
+    ...optBoolField("runtime.hideCancelButton", runtimeObj.hideCancelButton),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   };
 
-  const dataDir = asStringOpt("dataDir", root["dataDir"]);
-  const agents = parseAgentsBlock(root["agents"]);
+  const dataDir = asStringOpt("dataDir", root.dataDir);
+  const agents = parseAgentsBlock(root.agents);
 
   return {
     credentials,
@@ -270,11 +267,11 @@ function parseAgentsBlock(value: unknown): Readonly<Record<string, UserPresetPat
 }
 
 function parseAgentPatch(id: string, entry: Record<string, unknown>): UserPresetPatch {
-  const label = asStringOpt(`agents.${id}.label`, entry["label"]);
-  const command = asStringOpt(`agents.${id}.command`, entry["command"]);
-  const description = asStringOpt(`agents.${id}.description`, entry["description"]);
-  const args = parseAgentArgs(id, entry["args"]);
-  const env = parseAgentEnv(id, entry["env"]);
+  const label = asStringOpt(`agents.${id}.label`, entry.label);
+  const command = asStringOpt(`agents.${id}.command`, entry.command);
+  const description = asStringOpt(`agents.${id}.description`, entry.description);
+  const args = parseAgentArgs(id, entry.args);
+  const env = parseAgentEnv(id, entry.env);
 
   return {
     ...(label !== undefined ? { label } : {}),
@@ -336,7 +333,7 @@ function optNumberField(
 
 // ---------- argv parsing --------------------------------------------------
 
-type ParsedArgs = {
+interface ParsedArgs {
   readonly command: "proxy" | "agents" | "help" | "version";
   /** Preset id (`--agent <id>`); resolved against the registry in {@link runProxy}. */
   readonly agentPreset?: string;
@@ -354,7 +351,7 @@ type ParsedArgs = {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
-};
+}
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
 const VERSION_FLAGS = new Set(["-v", "--version"]);
@@ -543,11 +540,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
 
 // ---------- effective config ---------------------------------------------
 
-type EffectiveConfig = {
+interface EffectiveConfig {
   readonly appId: string;
   readonly appSecret: string;
   readonly credentialsSource: string;
-  readonly domain: LarkDomainName | string;
+  readonly domain: LarkDomainInput;
   readonly domainSource: string;
   readonly cwd: string;
   readonly dataDir: string;
@@ -557,7 +554,7 @@ type EffectiveConfig = {
   readonly showTools: boolean;
   readonly showCancelButton: boolean;
   readonly permissionMode: PermissionMode;
-};
+}
 
 /**
  * Merge file config, env vars, and CLI flags into a single resolved
@@ -635,7 +632,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   }
   const permissionMode =
     args.permissionMode ??
-    (envPermissionMode as PermissionMode | undefined) ??
+    envPermissionMode ??
     file.runtime.permissionMode ??
     DEFAULT_PERMISSION_MODE;
 
@@ -780,12 +777,12 @@ function printAgents(registry: Registry): void {
 
 // ---------- main ---------------------------------------------------------
 
-type ResolvedAgentInvocation = {
+interface ResolvedAgentInvocation {
   readonly command: string;
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly displayLabel: string;
-};
+}
 
 function resolveAgentInvocation(args: ParsedArgs, registry: Registry): ResolvedAgentInvocation {
   if (args.agentPreset !== undefined) {
@@ -917,7 +914,7 @@ function assertNever(x: never): never {
   throw new Error(`unexpected command: ${String(x)}`);
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   if (err instanceof CliError) {
     process.stderr.write(`error: ${err.message}\n`);
     process.exit(2);

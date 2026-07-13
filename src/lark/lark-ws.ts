@@ -1,6 +1,6 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { adaptToSdkLogger, type LarkLogger } from "../logger/logger.js";
-import { resolveLarkDomain, type LarkDomainName } from "./domain.js";
+import { resolveLarkDomain, type LarkDomainInput } from "./domain.js";
 
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
 
@@ -16,7 +16,7 @@ export interface LarkWsOptions {
    * Defaults to the SDK's Feishu domain when omitted; set `"lark"` for
    * apps on Lark International.
    */
-  domain?: LarkDomainName | string;
+  domain?: LarkDomainInput;
   logger: LarkLogger;
   onMessage: (event: Lark.RawMessageEvent) => void;
   onCardAction: (event: Lark.CardActionEvent) => void;
@@ -47,29 +47,35 @@ export class LarkWsConnection {
     });
   }
 
-  start(): void {
+  /**
+   * Connect and start listening for events.
+   *
+   * @throws when the underlying WebSocket connection fails to establish
+   *         (e.g. bad credentials, network failure).
+   */
+  async start(): Promise<void> {
     const sdkLogger = adaptToSdkLogger(this.logger.child({ name: "lark-sdk" }));
     const dispatcher = new Lark.EventDispatcher({
       logger: sdkLogger,
       loggerLevel: LARK_LOGGER_LEVEL,
     }).register({
-      "im.message.receive_v1": async (data) => {
+      "im.message.receive_v1": (data) => {
         try {
           this.onMessage(data as Lark.RawMessageEvent);
         } catch (err) {
           this.logger.error({ err }, "onMessage handler threw");
         }
       },
-      "im.message.message_read_v1": async () => {
+      "im.message.message_read_v1": () => {
         // suppress SDK warning noise
       },
-      "im.message.reaction.created_v1": async () => {
+      "im.message.reaction.created_v1": () => {
         this.logger.debug("reaction created");
       },
-      "im.message.reaction.deleted_v1": async () => {
+      "im.message.reaction.deleted_v1": () => {
         this.logger.debug("reaction deleted");
       },
-      "card.action.trigger": async (data: Lark.RawCardActionEvent) => {
+      "card.action.trigger": (data: Lark.RawCardActionEvent) => {
         try {
           const normalized = Lark.normalizeCardAction(data);
           if (normalized) this.onCardAction(normalized);
@@ -81,7 +87,12 @@ export class LarkWsConnection {
     });
 
     this.logger.info("connecting to Lark via WebSocket");
-    this.wsClient.start({ eventDispatcher: dispatcher });
+    await this.wsClient.start({ eventDispatcher: dispatcher });
     this.logger.info("WebSocket connected; listening for events");
+  }
+
+  /** Close the WebSocket connection. Safe to call even if never started. */
+  stop(): void {
+    this.wsClient.close();
   }
 }

@@ -114,29 +114,27 @@ export function spawnAdapter(bed: TestBed, extraEnv: Record<string, string> = {}
 
   const chunks: string[] = [];
   const client: acp.Client = {
-    async sessionUpdate(params: acp.SessionNotification): Promise<void> {
+    sessionUpdate(params: acp.SessionNotification): Promise<void> {
       const update = params.update;
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
         chunks.push(update.content.text);
       }
+      return Promise.resolve();
     },
-    async requestPermission(): Promise<acp.RequestPermissionResponse> {
-      return { outcome: { outcome: "cancelled" } };
+    requestPermission(): Promise<acp.RequestPermissionResponse> {
+      return Promise.resolve({ outcome: { outcome: "cancelled" } });
     },
-    async readTextFile(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
-      return { content: fs.readFileSync(params.path, "utf8") };
+    readTextFile(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
+      return Promise.resolve({ content: fs.readFileSync(params.path, "utf8") });
     },
-    async writeTextFile(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
+    writeTextFile(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
       fs.writeFileSync(params.path, params.content, "utf8");
-      return {};
+      return Promise.resolve({});
     },
   };
 
-  // Piped stdio guarantees the streams exist.
-  const stdin = proc.stdin;
-  const stdout = proc.stdout;
-  if (!stdin || !stdout) throw new Error("adapter spawned without piped stdio");
-  const stream = acp.ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout));
+  // The piped-stdio spawn overload types stdin/stdout as non-null.
+  const stream = acp.ndJsonStream(Writable.toWeb(proc.stdin), Readable.toWeb(proc.stdout));
   const conn = new acp.ClientSideConnection(() => client, stream);
 
   return {

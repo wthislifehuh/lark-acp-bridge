@@ -178,7 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): QAdapterConfig {
   const extraArgs = extraRaw === null ? [] : extraRaw.split(/\s+/).filter(Boolean);
 
   // `Q_ACP_WRAP` unset → default "never"; explicitly empty → omit the flag.
-  const wrapRaw = env["Q_ACP_WRAP"];
+  const wrapRaw = env.Q_ACP_WRAP;
   const wrap = wrapRaw === undefined ? DEFAULT_WRAP : wrapRaw.trim();
 
   return {
@@ -203,7 +203,7 @@ export function sessionFilePath(dataDir: string, sessionId: string): string {
 function isTranscriptMessage(value: unknown): value is TranscriptMessage {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return (obj["role"] === "user" || obj["role"] === "assistant") && typeof obj["text"] === "string";
+  return (obj.role === "user" || obj.role === "assistant") && typeof obj.text === "string";
 }
 
 /**
@@ -218,10 +218,10 @@ export function parseTranscriptFile(raw: string): TranscriptMessage[] {
     throw new Error("session file is not an object");
   }
   const obj = parsed as Record<string, unknown>;
-  if (obj["version"] !== SESSION_FILE_VERSION) {
-    throw new Error(`unsupported session file version: ${String(obj["version"])}`);
+  if (obj.version !== SESSION_FILE_VERSION) {
+    throw new Error(`unsupported session file version: ${String(obj.version)}`);
   }
-  const transcript = obj["transcript"];
+  const transcript = obj.transcript;
   if (!Array.isArray(transcript) || !transcript.every(isTranscriptMessage)) {
     throw new Error("session file has a malformed transcript");
   }

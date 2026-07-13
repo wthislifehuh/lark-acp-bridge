@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
@@ -11,10 +12,42 @@ import type {
 } from "../presenter/presenter.js";
 
 const TYPING_INTERVAL_MS = 5_000;
-const CARD_FLUSH_DEBOUNCE_MS = 100;
+// Coalescing window between card patches. Each patch re-sends the whole
+// card JSON and counts against Lark's OpenAPI rate limits, so anything
+// much below ~300ms burns quota with no visible benefit.
+const CARD_FLUSH_DEBOUNCE_MS = 300;
+
+// Lark rejects cards whose JSON exceeds ~30KB, and a failed patch means the
+// user stops seeing updates entirely — so display-only content (diffs,
+// thoughts, tool inputs) is capped rather than allowed to grow unboundedly.
+// Answer text is never truncated; if the final card can't be delivered it
+// falls back to a plain-text reply instead (see `finalize`).
+const MAX_DIFF_LINES = 50;
+const MAX_THOUGHT_CHARS = 4_000;
+const MAX_TOOL_DETAIL_CHARS = 500;
+
+const TRUNCATION_NOTICE = "…（内容过长，已截断）";
 
 const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
 const PERMISSION_SHUTDOWN_REASON = "会话已结束，本次确认已失效";
+
+/**
+ * Thrown when the agent asks to read / write a path outside its working
+ * directory. The bridge runs with its own privileges on behalf of anyone
+ * who can message the bot, so agent filesystem access is confined to
+ * `agentCwd`.
+ */
+export class AgentFsAccessError extends Error {
+  readonly requestedPath: string;
+  readonly agentCwd: string;
+
+  constructor(requestedPath: string, agentCwd: string) {
+    super(`path escapes agent working directory: ${requestedPath}`);
+    this.name = "AgentFsAccessError";
+    this.requestedPath = requestedPath;
+    this.agentCwd = agentCwd;
+  }
+}
 
 interface PendingPermission {
   requestId: string;
@@ -50,6 +83,8 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
 export interface LarkAcpClientOptions {
   presenter: LarkPresenter;
   logger: LarkLogger;
+  /** Agent working directory — `fs/read_text_file` / `fs/write_text_file` are confined to it. */
+  agentCwd: string;
   /** Include `agent_thought_chunk` updates in the unified card. */
   showThoughts: boolean;
   /** Include `tool_call` / `tool_call_update` events in the unified card. */
@@ -77,6 +112,7 @@ export interface LarkAcpClientOptions {
 export class LarkAcpClient implements acp.Client {
   private readonly presenter: LarkPresenter;
   private readonly logger: LarkLogger;
+  private readonly agentCwd: string;
   private readonly showThoughts: boolean;
   private readonly showTools: boolean;
   private readonly showCancelButton: boolean;
@@ -103,6 +139,7 @@ export class LarkAcpClient implements acp.Client {
   constructor(opts: LarkAcpClientOptions) {
     this.presenter = opts.presenter;
     this.logger = opts.logger.child({ name: "acp-client" });
+    this.agentCwd = path.resolve(opts.agentCwd);
     this.showThoughts = opts.showThoughts;
     this.showTools = opts.showTools;
     this.showCancelButton = opts.showCancelButton;
@@ -132,7 +169,7 @@ export class LarkAcpClient implements acp.Client {
 
     if (!this.currentMessageId) {
       this.logger.warn(
-        { tool: params.toolCall?.title ?? "unknown" },
+        { tool: params.toolCall.title ?? "unknown" },
         "no message context — cancelling permission request",
       );
       return { outcome: { outcome: "cancelled" } };
@@ -150,10 +187,9 @@ export class LarkAcpClient implements acp.Client {
       this.pendingPermissions.set(requestId, pending);
 
       if (this.permissionTimeoutMs > 0) {
-        pending.timer = setTimeout(
-          () => this.expirePendingPermission(requestId, PERMISSION_TIMEOUT_REASON),
-          this.permissionTimeoutMs,
-        );
+        pending.timer = setTimeout(() => {
+          this.expirePendingPermission(requestId, PERMISSION_TIMEOUT_REASON);
+        }, this.permissionTimeoutMs);
       }
 
       this.presenter
@@ -162,7 +198,7 @@ export class LarkAcpClient implements acp.Client {
           const stillPending = this.pendingPermissions.get(requestId);
           if (stillPending) stillPending.cardMessageId = cardMessageId;
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           this.logger.warn({ err, requestId }, "sendInterruptCard failed");
           this.disposePending(requestId);
           resolve({ outcome: { outcome: "cancelled" } });
@@ -177,7 +213,7 @@ export class LarkAcpClient implements acp.Client {
     const wantAllow = mode === "alwaysAllow";
     const prefix = wantAllow ? "allow_" : "reject_";
     const match = params.options.find((o) => o.kind.startsWith(prefix));
-    const tool = params.toolCall?.title ?? "unknown";
+    const tool = params.toolCall.title ?? "unknown";
 
     if (!match) {
       this.logger.warn(
@@ -216,9 +252,9 @@ export class LarkAcpClient implements acp.Client {
 
     const cardId = pp.cardMessageId;
     if (cardId) {
-      this.presenter
-        .expirePermissionCard(cardId, reason)
-        .catch((err) => this.logger.debug({ err, cardId }, "expirePermissionCard rejected"));
+      this.presenter.expirePermissionCard(cardId, reason).catch((err: unknown) => {
+        this.logger.debug({ err, cardId }, "expirePermissionCard rejected");
+      });
     }
   }
 
@@ -257,14 +293,9 @@ export class LarkAcpClient implements acp.Client {
         const toolCallId = u.toolCallId;
         if (!toolCallId) return;
         const rawInput = u.rawInput;
-        const detail = typeof rawInput === "string" ? rawInput : undefined;
-        this.upsertTool(
-          toolCallId,
-          u.title ?? "unknown",
-          u.kind ?? "tool",
-          (u.status ?? "in_progress") as ToolStatus,
-          detail,
-        );
+        const detail =
+          typeof rawInput === "string" ? truncateChars(rawInput, MAX_TOOL_DETAIL_CHARS) : undefined;
+        this.upsertTool(toolCallId, u.title, u.kind ?? "tool", u.status ?? "in_progress", detail);
         this.status = "calling_tool";
         this.scheduleFlush();
         await this.maybeSendTyping();
@@ -280,33 +311,68 @@ export class LarkAcpClient implements acp.Client {
         if (u.content) {
           for (const c of u.content) {
             if (c.type !== "diff") continue;
-            const diff = c as acp.Diff;
-            const lines: string[] = [`--- ${diff.path}`];
-            diff.oldText?.split("\n").forEach((l) => lines.push(`- ${l}`));
-            diff.newText?.split("\n").forEach((l) => lines.push(`+ ${l}`));
-            this.appendText("text", "\n```diff\n" + lines.join("\n") + "\n```\n");
+            const lines: string[] = [`--- ${c.path}`];
+            c.oldText?.split("\n").forEach((l) => lines.push(`- ${l}`));
+            c.newText.split("\n").forEach((l) => lines.push(`+ ${l}`));
+            this.appendText(
+              "text",
+              "\n```diff\n" + truncateLines(lines, MAX_DIFF_LINES) + "\n```\n",
+            );
           }
         }
-        this.upsertTool(toolCallId, u.title ?? "unknown", u.kind ?? "tool", u.status as ToolStatus);
+        this.upsertTool(toolCallId, u.title ?? "unknown", u.kind ?? "tool", u.status);
         this.scheduleFlush();
         return;
       }
     }
   }
 
+  /**
+   * @throws {AgentFsAccessError} when `params.path` resolves outside the agent cwd.
+   */
   async readTextFile(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
-    const content = await fs.promises.readFile(params.path, "utf-8");
-    return { content };
+    const resolved = this.resolveAgentPath(params.path);
+    this.logger.debug({ path: resolved }, "agent fs read");
+    const content = await fs.promises.readFile(resolved, "utf-8");
+    return { content: sliceFileContent(content, params.line, params.limit) };
   }
 
+  /**
+   * @throws {AgentFsAccessError} when `params.path` resolves outside the agent cwd.
+   */
   async writeTextFile(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
-    await fs.promises.writeFile(params.path, params.content, "utf-8");
+    const resolved = this.resolveAgentPath(params.path);
+    this.logger.info({ path: resolved }, "agent fs write");
+    await fs.promises.writeFile(resolved, params.content, "utf-8");
     return {};
+  }
+
+  /**
+   * Resolve an agent-supplied path against the agent cwd and confine it there.
+   *
+   * @throws {AgentFsAccessError} when the resolved path escapes the agent cwd.
+   */
+  private resolveAgentPath(requested: string): string {
+    const resolved = path.resolve(this.agentCwd, requested);
+    const relative = path.relative(this.agentCwd, resolved);
+    // `..` prefix = walks out of cwd; absolute relative = different drive (Windows).
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      this.logger.warn(
+        { requested, agentCwd: this.agentCwd },
+        "agent fs access outside cwd denied",
+      );
+      throw new AgentFsAccessError(requested, this.agentCwd);
+    }
+    return resolved;
   }
 
   /**
    * Finalise the unified card with the given terminal status, then reset
    * per-prompt state so the next prompt starts clean.
+   *
+   * If the final card can't be delivered (e.g. the timeline pushed the card
+   * JSON past Lark's size limit and every patch fails), the answer text is
+   * sent as plain reply messages instead so content is never lost.
    */
   async finalize(status: AgentStatus): Promise<void> {
     this.status = status;
@@ -316,13 +382,35 @@ export class LarkAcpClient implements acp.Client {
     }
     // Wait for any in-flight flush so we don't race the final patch.
     while (this.flushing) await new Promise<void>((r) => setTimeout(r, 10));
-    await this.renderCard({ cancellable: false });
-    this.timeline = [];
-    this.toolIndex.clear();
-    this.cardId = null;
-    this.cardCreating = null;
-    this.lastTypingAt = 0;
-    this.status = "thinking";
+    try {
+      await this.renderCard({ cancellable: false });
+      // Card was never created (every send failed) — the user has seen nothing.
+      if (!this.cardId && this.timeline.length > 0) await this.replyFinalTextFallback();
+    } catch (err) {
+      this.logger.warn({ err }, "final card render failed — falling back to text reply");
+      await this.replyFinalTextFallback();
+    } finally {
+      this.timeline = [];
+      this.toolIndex.clear();
+      this.cardId = null;
+      this.cardCreating = null;
+      this.lastTypingAt = 0;
+      this.status = "thinking";
+    }
+  }
+
+  /** Last-resort delivery path: reply the accumulated answer text as plain messages. */
+  private async replyFinalTextFallback(): Promise<void> {
+    if (!this.currentMessageId) return;
+    const answer = this.timeline
+      .filter((entry) => entry.kind === "text")
+      .map((entry) => entry.text)
+      .join("")
+      .trim();
+    if (!answer) return;
+    await this.presenter.replyText(this.currentMessageId, answer).catch((err: unknown) => {
+      this.logger.error({ err }, "final text fallback failed — answer lost");
+    });
   }
 
   // ----- Timeline mutators ------------------------------------------------
@@ -330,11 +418,21 @@ export class LarkAcpClient implements acp.Client {
   private appendText(kind: "text" | "thought", text: string): void {
     if (!text) return;
     const last = this.timeline.at(-1);
-    if (last && last.kind === kind) {
+    if (last?.kind === kind) {
+      // Thought entries are display-only — stop growing them past the cap
+      // so a chatty reasoning stream can't blow the card size budget.
+      // Answer text is never truncated (see `finalize` fallback instead).
+      if (kind === "thought" && last.text.endsWith(TRUNCATION_NOTICE)) return;
       last.text += text;
+      if (kind === "thought" && last.text.length > MAX_THOUGHT_CHARS) {
+        last.text = last.text.slice(0, MAX_THOUGHT_CHARS) + TRUNCATION_NOTICE;
+      }
       return;
     }
-    this.timeline.push({ kind, text });
+    this.timeline.push({
+      kind,
+      text: kind === "thought" ? truncateChars(text, MAX_THOUGHT_CHARS) : text,
+    });
   }
 
   private upsertTool(
@@ -363,12 +461,15 @@ export class LarkAcpClient implements acp.Client {
 
   private scheduleFlush(): void {
     if (!this.currentMessageId) return;
-    if (this.flushTimer) clearTimeout(this.flushTimer);
+    // Coalesce instead of resetting the timer: with a reset-style debounce a
+    // fast stream (chunks arriving faster than the window) would starve the
+    // card of updates entirely until the stream paused.
+    if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
-      this.renderCard({ cancellable: true }).catch((err) =>
-        this.logger.warn({ err }, "card flush failed"),
-      );
+      this.renderCard({ cancellable: true }).catch((err: unknown) => {
+        this.logger.warn({ err }, "card flush failed");
+      });
     }, CARD_FLUSH_DEBOUNCE_MS);
   }
 
@@ -412,6 +513,32 @@ export class LarkAcpClient implements acp.Client {
     const now = Date.now();
     if (now - this.lastTypingAt < TYPING_INTERVAL_MS) return;
     this.lastTypingAt = now;
-    await this.callbacks.onTyping().catch((err) => this.logger.debug({ err }, "onTyping rejected"));
+    await this.callbacks.onTyping().catch((err: unknown) => {
+      this.logger.debug({ err }, "onTyping rejected");
+    });
   }
+}
+
+function truncateChars(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars) + TRUNCATION_NOTICE;
+}
+
+function truncateLines(lines: readonly string[], maxLines: number): string {
+  if (lines.length <= maxLines) return lines.join("\n");
+  const omitted = lines.length - maxLines;
+  return [...lines.slice(0, maxLines), `... (省略 ${omitted} 行)`].join("\n");
+}
+
+/** Apply ACP's optional 1-based `line` offset and `limit` (max lines) to file content. */
+function sliceFileContent(
+  content: string,
+  line: number | null | undefined,
+  limit: number | null | undefined,
+): string {
+  if (line == null && limit == null) return content;
+  const lines = content.split("\n");
+  const start = line != null && line > 1 ? line - 1 : 0;
+  const end = limit != null ? start + limit : lines.length;
+  return lines.slice(start, end).join("\n");
 }

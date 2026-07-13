@@ -239,8 +239,8 @@ function extractTextContent(
     for (const m of mentions) {
       const key = m.key;
       if (!key) continue;
-      const isSelf = botOpenId !== undefined && m.id?.open_id === botOpenId;
-      const replacement = isSelf ? "" : `@{${m.name ?? m.id?.open_id ?? key}}`;
+      const isSelf = botOpenId !== undefined && m.id.open_id === botOpenId;
+      const replacement = isSelf ? "" : `@{${m.name ?? m.id.open_id ?? key}}`;
       text = text.replaceAll(key, replacement);
     }
   }
@@ -400,6 +400,10 @@ function elementToText(el: PostElement): string {
 
 // ---- Helpers ----
 
+// Deliberate cast-without-validation helper: payload shapes follow Lark's
+// documented message formats and every downstream field access is defensive
+// (`?.` / `??`), so a zod schema per message type would only duplicate that.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
 function safeParse<T>(raw: string): T | null {
   try {
     return JSON.parse(raw) as T;

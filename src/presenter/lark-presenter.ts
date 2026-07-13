@@ -83,8 +83,8 @@ function buildPermissionCard(
   requestId: string,
   chatId: string,
 ): object {
-  const toolTitle = params.toolCall?.title ?? "unknown";
-  const toolKind = params.toolCall?.kind ?? "tool";
+  const toolTitle = params.toolCall.title ?? "unknown";
+  const toolKind = params.toolCall.kind ?? "tool";
 
   const elements: object[] = [{ tag: "markdown", content: `**${toolKind}**: ${toolTitle}` }];
 
@@ -114,15 +114,11 @@ function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: st
 }
 
 function buildNoticeCard(notice: NoticeCardSpec): object {
-  return buildV2Card(notice.title, notice.template, [
-    { tag: "markdown", content: notice.body },
-  ]);
+  return buildV2Card(notice.title, notice.template, [{ tag: "markdown", content: notice.body }]);
 }
 
 function buildExpiredCard(reason: string): object {
-  return buildV2Card("已失效", HEADER_TEMPLATE_EXPIRED, [
-    { tag: "markdown", content: reason },
-  ]);
+  return buildV2Card("已失效", HEADER_TEMPLATE_EXPIRED, [{ tag: "markdown", content: reason }]);
 }
 
 function assertNever(x: never): never {
@@ -280,10 +276,6 @@ export class LarkCardPresenter implements LarkPresenter {
   }
 
   async updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void> {
-    try {
-      await this.http.patchCard(cardMessageId, buildUnifiedCard(state));
-    } catch (err) {
-      this.logger.warn({ err, cardMessageId }, "updateUnifiedCard failed");
-    }
+    await this.http.patchCard(cardMessageId, buildUnifiedCard(state));
   }
 }

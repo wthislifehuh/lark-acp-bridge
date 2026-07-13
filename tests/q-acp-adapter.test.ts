@@ -9,7 +9,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import * as acp from "@agentclientprotocol/sdk";
 import {
   createTestBed,
   initialize,
@@ -153,7 +152,7 @@ describe("q-acp adapter", () => {
       adapter.conn.prompt({ sessionId, prompt: [{ type: "text", text: "please FAIL now" }] }),
     ).rejects.toMatchObject({
       // acp.RequestError data carries the adapter's message, which embeds the stderr tail.
-      data: { details: expect.stringContaining("not logged in") },
+      data: { details: expect.stringContaining("not logged in") as unknown },
     });
   });
 }, 20_000);

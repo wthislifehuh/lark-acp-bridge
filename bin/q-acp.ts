@@ -92,22 +92,22 @@ class QAgent implements acp.Agent {
     this.config = config;
   }
 
-  async initialize(_params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
-    return {
+  initialize(_params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+    return Promise.resolve({
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, version: AGENT_VERSION },
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
       },
-    };
+    });
   }
 
-  async authenticate(_params: acp.AuthenticateRequest): Promise<acp.AuthenticateResponse> {
-    return {};
+  authenticate(_params: acp.AuthenticateRequest): Promise<acp.AuthenticateResponse> {
+    return Promise.resolve({});
   }
 
-  async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
+  newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
     this.sessions.set(sessionId, {
       cwd: params.cwd,
@@ -115,7 +115,7 @@ class QAgent implements acp.Agent {
       child: null,
       cancelled: false,
     });
-    return { sessionId };
+    return Promise.resolve({ sessionId });
   }
 
   /**
@@ -142,17 +142,16 @@ class QAgent implements acp.Agent {
     return {};
   }
 
-  async setSessionMode(
-    _params: acp.SetSessionModeRequest,
-  ): Promise<acp.SetSessionModeResponse | void> {
-    return {};
+  setSessionMode(_params: acp.SetSessionModeRequest): Promise<acp.SetSessionModeResponse> {
+    return Promise.resolve({});
   }
 
-  async cancel(params: acp.CancelNotification): Promise<void> {
+  cancel(params: acp.CancelNotification): Promise<void> {
     const session = this.sessions.get(params.sessionId);
-    if (!session?.child) return;
+    if (!session?.child) return Promise.resolve();
     session.cancelled = true;
     killChild(session.child);
+    return Promise.resolve();
   }
 
   /**
@@ -231,7 +230,7 @@ class QAgent implements acp.Agent {
       let stdoutCarry = "";
       const stderrTail: string[] = [];
 
-      child.stdout?.on("data", (chunk: Buffer) => {
+      child.stdout.on("data", (chunk: Buffer) => {
         stdoutCarry += chunk.toString("utf8");
         const parts = stdoutCarry.split(/\r?\n/);
         stdoutCarry = parts.pop() ?? "";
@@ -242,7 +241,7 @@ class QAgent implements acp.Agent {
         this.emit(sessionId, text);
       });
 
-      child.stderr?.on("data", (chunk: Buffer) => {
+      child.stderr.on("data", (chunk: Buffer) => {
         for (const part of chunk.toString("utf8").split(/\r?\n/)) {
           const line = stripAnsi(part).trim();
           if (!line) continue;

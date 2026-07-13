@@ -90,11 +90,11 @@ function renderBlock(token: Token): string | undefined {
     case "heading": {
       const heading = token as Tokens.Heading;
       const hashes = "#".repeat(Math.max(1, Math.min(6, heading.depth)));
-      return `${hashes} ${renderInlineTokens(heading.tokens ?? [])}`;
+      return `${hashes} ${renderInlineTokens(heading.tokens)}`;
     }
     case "paragraph": {
       const para = token as Tokens.Paragraph;
-      const inline = renderInlineTokens(para.tokens ?? []);
+      const inline = renderInlineTokens(para.tokens);
       return inline ? inline : undefined;
     }
     case "code": {
@@ -127,8 +127,9 @@ function renderBlock(token: Token): string | undefined {
       return html ? html : undefined;
     }
     default: {
+      // empty string also collapses to undefined so blank blocks are skipped
       const raw = (token as { raw?: string }).raw?.trim();
-      return raw ? raw : undefined;
+      return raw !== undefined && raw !== "" ? raw : undefined;
     }
   }
 }
@@ -150,19 +151,19 @@ function renderInline(token: Token): string {
     case "text": {
       const text = token as Tokens.Text;
       if (text.tokens?.length) return renderInlineTokens(text.tokens);
-      return text.text ?? "";
+      return text.text;
     }
     case "strong":
-      return `**${renderInlineTokens((token as Tokens.Strong).tokens ?? [])}**`;
+      return `**${renderInlineTokens((token as Tokens.Strong).tokens)}**`;
     case "em":
-      return `*${renderInlineTokens((token as Tokens.Em).tokens ?? [])}*`;
+      return `*${renderInlineTokens((token as Tokens.Em).tokens)}*`;
     case "del":
-      return `~~${renderInlineTokens((token as Tokens.Del).tokens ?? [])}~~`;
+      return `~~${renderInlineTokens((token as Tokens.Del).tokens)}~~`;
     case "codespan":
       return `\`${(token as Tokens.Codespan).text}\``;
     case "link": {
       const link = token as Tokens.Link;
-      const label = renderInlineTokens(link.tokens ?? []) || link.text || link.href;
+      const label = renderInlineTokens(link.tokens) || link.text || link.href;
       return `[${label}](${link.href})`;
     }
     case "image": {

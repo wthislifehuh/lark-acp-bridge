@@ -15,6 +15,8 @@ export interface PendingMessage {
   prompt: acp.ContentBlock[];
   messageId: string;
   chatId: string;
+  /** Lark open_id of the message sender — tracked to decide context-prefix stickiness. */
+  userId: string;
 }
 
 export interface ChatRuntimeOptions {
@@ -41,6 +43,8 @@ interface ChatRuntimeState {
   lastActivity: number;
   /** Last messageId we processed — used to attach exit notices to a thread. */
   lastMessageId: string | null;
+  /** userId the context prefix was last sent for, in this agent session. */
+  lastContextUserId: string | null;
 }
 
 /**
@@ -58,6 +62,10 @@ export class ChatRuntime {
   private aborted = false;
   /** Set while a prompt is in-flight — exit handler defers to handlePromptError then. */
   private promptInFlight = false;
+  /** The one live typing reaction (if any) — onTyping fires every few seconds,
+   *  but re-adding the same reaction is a duplicate-reaction API error. */
+  private typingReaction: { messageId: string; reactionId: string } | null = null;
+  private typingReactionInFlight = false;
 
   constructor(opts: ChatRuntimeOptions) {
     this.opts = opts;
@@ -77,6 +85,16 @@ export class ChatRuntime {
   }
 
   /**
+   * Whether the next prompt for `userId` should carry the context prefix —
+   * true on a fresh agent session (nothing sent yet), or when the sender
+   * changes from the last message this session saw.
+   */
+  needsContext(userId: string): boolean {
+    if (!this.state) return true;
+    return this.state.lastContextUserId !== userId;
+  }
+
+  /**
    * Enqueue a Lark message; spawns the agent on first call.
    *
    * @throws if bootstrap (spawn / initialize / newSession / resume) fails.
@@ -86,6 +104,7 @@ export class ChatRuntime {
     if (!this.state) {
       try {
         this.state = await this.bootstrap(message);
+        this.aborted = false;
       } catch (err) {
         this.aborted = true;
         throw err;
@@ -93,11 +112,14 @@ export class ChatRuntime {
     }
 
     this.state.lastActivity = Date.now();
+    this.state.lastContextUserId = message.userId;
     this.state.queue.push(message);
 
     if (!this.state.processing) {
       this.state.processing = true;
-      this.processQueue().catch((err) => this.logger.error({ err }, "queue processor crashed"));
+      this.processQueue().catch((err: unknown) => {
+        this.logger.error({ err }, "queue processor crashed");
+      });
     }
   }
 
@@ -138,13 +160,14 @@ export class ChatRuntime {
     const client = new LarkAcpClient({
       presenter: this.opts.presenter,
       logger: this.logger,
+      agentCwd: this.opts.agentCwd,
       showThoughts: this.opts.showThoughts,
       showTools: this.opts.showTools,
       showCancelButton: this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
       permissionMode: this.opts.permissionMode,
       callbacks: {
-        onTyping: () => this.opts.presenter.addReaction(firstMessage.messageId).then(() => {}),
+        onTyping: () => this.ensureTypingReaction(firstMessage.messageId),
       },
     });
 
@@ -180,6 +203,7 @@ export class ChatRuntime {
       processing: false,
       lastActivity: Date.now(),
       lastMessageId: firstMessage.messageId,
+      lastContextUserId: null,
     };
   }
 
@@ -202,11 +226,13 @@ export class ChatRuntime {
 
     if (!messageId || exitedNormally) return;
 
-    const stderrSuffix = tail.length > 0 ? `\n\nstderr (最后 ${tail.length} 行):\n${tail.join("\n")}` : "";
-    const summary = `⚠️ Agent 进程意外退出 (code=${code ?? "null"}, signal=${signal ?? "null"})${stderrSuffix}`;
-    this.opts.presenter
-      .replyText(messageId, summary)
-      .catch((err) => this.logger.warn({ err }, "exit notice reply failed"));
+    const stderrSuffix =
+      tail.length > 0 ? `\n\nstderr (最后 ${tail.length} 行):\n${tail.join("\n")}` : "";
+    // `code` is non-null here — exitedNormally covered the null case above.
+    const summary = `⚠️ Agent 进程意外退出 (code=${code}, signal=${signal ?? "null"})${stderrSuffix}`;
+    this.opts.presenter.replyText(messageId, summary).catch((err: unknown) => {
+      this.logger.warn({ err }, "exit notice reply failed");
+    });
   }
 
   private async processQueue(): Promise<void> {
@@ -215,11 +241,12 @@ export class ChatRuntime {
 
     try {
       while (state.queue.length > 0 && !this.aborted) {
-        const pending = state.queue.shift()!;
+        const pending = state.queue.shift();
+        if (!pending) break;
         state.lastMessageId = pending.messageId;
 
         state.client.updateCallbacks({
-          onTyping: () => this.opts.presenter.addReaction(pending.messageId).then(() => {}),
+          onTyping: () => this.ensureTypingReaction(pending.messageId),
         });
 
         state.client.setContext(pending.messageId, pending.chatId);
@@ -239,22 +266,45 @@ export class ChatRuntime {
     }
   }
 
+  /**
+   * Add the typing reaction for `messageId` unless it is already present.
+   * Deduplicates the periodic `onTyping` callback — Lark rejects adding
+   * the same reaction twice, so one live reaction is tracked per runtime.
+   */
+  private async ensureTypingReaction(messageId: string): Promise<void> {
+    if (this.typingReactionInFlight || this.typingReaction?.messageId === messageId) return;
+    this.typingReactionInFlight = true;
+    try {
+      const reactionId = await this.opts.presenter.addReaction(messageId).catch(() => null);
+      if (reactionId) this.typingReaction = { messageId, reactionId };
+    } finally {
+      this.typingReactionInFlight = false;
+    }
+  }
+
+  private async clearTypingReaction(): Promise<void> {
+    const reaction = this.typingReaction;
+    if (!reaction) return;
+    this.typingReaction = null;
+    await this.opts.presenter
+      .removeReaction(reaction.messageId, reaction.reactionId)
+      .catch((err: unknown) => {
+        this.logger.debug({ err }, "removeReaction failed");
+      });
+  }
+
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
-    const reactionId = await this.opts.presenter.addReaction(pending.messageId).catch(() => null);
+    await this.ensureTypingReaction(pending.messageId);
     this.logger.info("sending prompt to agent");
 
-    let result: Awaited<ReturnType<typeof state.agent.connection.prompt>>;
+    let result: acp.PromptResponse;
     try {
       result = await state.agent.connection.prompt({
         sessionId: state.agent.sessionId,
         prompt: pending.prompt,
       });
     } finally {
-      if (reactionId) {
-        this.opts.presenter
-          .removeReaction(pending.messageId, reactionId)
-          .catch((err) => this.logger.debug({ err }, "removeReaction failed"));
-      }
+      await this.clearTypingReaction();
     }
 
     this.logger.info({ stopReason: result.stopReason }, "prompt done");
@@ -272,14 +322,16 @@ export class ChatRuntime {
     const procDead = state.agent.process.killed || state.agent.process.exitCode !== null;
     const stderrTail = procDead ? state.agent.getRecentStderr() : [];
     const stderrSuffix =
-      stderrTail.length > 0 ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}` : "";
+      stderrTail.length > 0
+        ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}`
+        : "";
 
     // Always finalize the unified card as failed so the in-progress state
     // doesn't get stuck. Best-effort — if presenter rejects we still surface
     // the error via replyText below.
-    await state.client
-      .finalize("failed")
-      .catch((finalErr) => this.logger.debug({ err: finalErr }, "finalize after error rejected"));
+    await state.client.finalize("failed").catch((finalErr: unknown) => {
+      this.logger.debug({ err: finalErr }, "finalize after error rejected");
+    });
 
     if (isAuthError || procDead) {
       this.shutdown();
@@ -287,16 +339,18 @@ export class ChatRuntime {
         ? `⚠️ Agent authentication failed: ${errMsg}${stderrSuffix}`
         : `⚠️ Agent crashed: ${errMsg}${stderrSuffix}`;
       this.logger.error({ err, isAuthError }, "agent died");
-      await this.opts.presenter
-        .replyText(pending.messageId, summary)
-        .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
+      await this.opts.presenter.replyText(pending.messageId, summary).catch((sendErr: unknown) => {
+        this.logger.warn({ err: sendErr }, "error reply failed");
+      });
       return;
     }
 
     this.logger.warn({ err }, "agent error");
     await this.opts.presenter
       .replyText(pending.messageId, `⚠️ Agent error: ${errMsg}`)
-      .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
+      .catch((sendErr: unknown) => {
+        this.logger.warn({ err: sendErr }, "error reply failed");
+      });
   }
 
   private async persistSession(sessionId: string): Promise<void> {
@@ -336,7 +390,7 @@ function formatAgentError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (err && typeof err === "object") {
     const obj = err as Record<string, unknown>;
-    if (typeof obj["message"] === "string") return obj["message"];
+    if (typeof obj.message === "string") return obj.message;
     return JSON.stringify(err);
   }
   return String(err);
@@ -348,7 +402,7 @@ const AUTH_REQUIRED_PATTERN = /auth(entication)? required/i;
 function isAuthenticationError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const obj = err as Record<string, unknown>;
-  if (typeof obj["code"] === "number" && obj["code"] === ACP_AUTH_REQUIRED_CODE) return true;
-  if (typeof obj["message"] === "string" && AUTH_REQUIRED_PATTERN.test(obj["message"])) return true;
+  if (typeof obj.code === "number" && obj.code === ACP_AUTH_REQUIRED_CODE) return true;
+  if (typeof obj.message === "string" && AUTH_REQUIRED_PATTERN.test(obj.message)) return true;
   return false;
 }
