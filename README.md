@@ -20,7 +20,7 @@ You send a message in Feishu/Lark; the agent runs on your machine; its thinking,
 For real-world use we strongly recommend pairing this with the [Lark CLI](https://github.com/larksuite/cli) and its skills — the bridge injects chat context (chat id, sender name, group name) into the prompt, so the agent can chain into all kinds of Lark operations through the Lark CLI.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/wthislifehuh/lark-acp-bridge/main/docs/mock-example.jpg" alt="lark-acp demo — an AI agent streaming thoughts, tool calls and results into an interactive Feishu/Lark card" width="640">
+  <img src="https://cdn.jsdelivr.net/gh/wthislifehuh/lark-acp-bridge@main/docs/mock-example.jpg" alt="lark-acp demo — an AI agent streaming thoughts, tool calls and results into an interactive Feishu/Lark card" width="640">
 </p>
 
 ## Contents
