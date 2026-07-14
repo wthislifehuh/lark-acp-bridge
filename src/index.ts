@@ -38,6 +38,22 @@ export type { LarkCardPresenterOptions } from "./presenter/lark-presenter.js";
 export type { SessionStore, SessionRecord } from "./session-store/session-store.js";
 export { FileSessionStore } from "./session-store/file-session-store.js";
 
+export { AccessControl, FileAccessStore, DEFAULT_ACCESS_STATE } from "./access-control/index.js";
+export type {
+  AccessControlOptions,
+  AccessDecision,
+  AccessDenyReason,
+  AccessRequest,
+  AccessRole,
+  AccessState,
+  AccessStore,
+  AccessTarget,
+  ChatKind,
+} from "./access-control/index.js";
+
+export { Identity, IDENTITY_POLICIES, IDENTITY_ENV, isIdentityPolicy } from "./identity/index.js";
+export type { IdentityOptions, IdentityPolicy, PromptContext } from "./identity/index.js";
+
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";
 
@@ -48,3 +64,5 @@ export {
   resolveLarkDomain,
 } from "./lark/domain.js";
 export type { LarkDomainName, LarkDomainInput } from "./lark/domain.js";
+
+export type { LarkWsKeepaliveOptions } from "./lark/lark-ws.js";

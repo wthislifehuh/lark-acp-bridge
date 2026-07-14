@@ -87,6 +87,20 @@ export const BUILT_IN_AGENTS: Readonly<Record<string, AgentPreset>> = {
     description:
       "Amazon Q (`q`) via the bundled ACP adapter; assumes `q` is on $PATH and logged in. Text-only: no per-tool permission cards (Kiro CLI is the native-ACP successor)",
   },
+  "copilot-studio": {
+    label: "Microsoft Copilot Studio",
+    command: "lark-acp-copilot-studio",
+    args: [],
+    description:
+      "Microsoft Copilot Studio agent via the bundled Direct-to-Engine ACP adapter; needs COPILOT_STUDIO_* env config and a one-time `lark-acp-copilot-studio login`",
+  },
+  "m365-copilot": {
+    label: "Microsoft 365 Copilot",
+    command: "lark-acp-m365",
+    args: [],
+    description:
+      "Microsoft 365 Copilot (BizChat) via the bundled Graph Chat API adapter (beta API); needs M365_COPILOT_* env config, a Copilot license, and a one-time `lark-acp-m365 login`",
+  },
   mock: {
     label: "Mock Agent",
     command: "lark-acp-mock",

@@ -27,17 +27,31 @@ import path from "node:path";
 import os from "node:os";
 import process from "node:process";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import {
   LarkBridge,
   FileSessionStore,
+  AccessControl,
+  FileAccessStore,
+  Identity,
+  IDENTITY_POLICIES,
+  isIdentityPolicy,
   createPinoLogger,
   PERMISSION_MODES,
   LARK_DOMAINS,
   DEFAULT_LARK_DOMAIN,
   isLarkDomainName,
 } from "../src/index.js";
-import type { LarkLogger, PermissionMode, LarkDomainInput } from "../src/index.js";
+import type {
+  LarkLogger,
+  PermissionMode,
+  IdentityPolicy,
+  LarkDomainInput,
+} from "../src/index.js";
 import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
+import { parseNpxInvocation, preferPreparedShim, SHIMS_DIRNAME } from "./shims.js";
+import { buildServiceDefinition, type ServicePlatform, type ServiceSpec } from "./service.js";
+import { fileURLToPath } from "node:url";
 
 // Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
 const { version: VERSION } = createRequire(import.meta.url)("../../package.json") as {
@@ -53,10 +67,18 @@ const ENV_DOMAIN = "LARK_ACP_DOMAIN";
 const ENV_CONFIG = "LARK_ACP_CONFIG";
 const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
 const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
+const ENV_OWNER = "LARK_ACP_OWNER";
+const ENV_IDENTITY = "LARK_ACP_IDENTITY";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
+const DEFAULT_IDENTITY_POLICY: IdentityPolicy = "bot-only";
+const LARK_CLI_CONFIG_DIRNAME = "lark-cli";
+// Conservative defaults for an unattended box: reconnect if the socket goes
+// silent for 60s, and don't let a stuck handshake hang forever.
+const DEFAULT_PING_TIMEOUT_SECONDS = 60;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 // ---------- paths ---------------------------------------------------------
 
@@ -86,6 +108,12 @@ function envDataDirOverride(): string | undefined {
   return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
 }
 
+/** dataDir: `--data-dir` flag > env > config file > XDG default (resolved absolute). */
+function resolveDataDir(args: ParsedArgs, file: FileConfig): string {
+  const raw = args.dataDir ?? envDataDirOverride() ?? file.dataDir ?? defaultDataDir();
+  return path.resolve(raw);
+}
+
 // ---------- config file schema -------------------------------------------
 
 interface FileCredentials {
@@ -103,16 +131,47 @@ interface FileRuntime {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
+  /** WebSocket liveness watchdog window in seconds (0 = disabled). */
+  readonly pingTimeoutSeconds?: number;
+  /** WebSocket handshake timeout in ms (0 = disabled). */
+  readonly handshakeTimeoutMs?: number;
+}
+
+interface FileAccess {
+  /** Whether to enforce access control. Defaults to `true`. */
+  readonly enabled?: boolean;
+  /**
+   * Owner `open_id`. When set it always wins and can never be locked out;
+   * when omitted the first user to DM the bot claims ownership.
+   */
+  readonly ownerOpenId?: string;
+}
+
+interface FileIdentity {
+  /** `bot-only` (default) or `user-default`. */
+  readonly policy?: IdentityPolicy;
+  /** Inject bot app credentials into the agent env for `lark-cli`. Default `false`. */
+  readonly injectCredentials?: boolean;
+  /** Prepend a chat/sender context block to prompts. Default `true`. */
+  readonly promptContext?: boolean;
 }
 
 interface FileConfig {
   readonly credentials: FileCredentials;
   readonly dataDir?: string;
   readonly runtime: FileRuntime;
+  readonly access: FileAccess;
+  readonly identity: FileIdentity;
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
 }
 
-const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {} };
+const EMPTY_FILE_CONFIG: FileConfig = {
+  credentials: {},
+  runtime: {},
+  access: {},
+  identity: {},
+  agents: {},
+};
 
 class CliError extends Error {}
 
@@ -162,6 +221,14 @@ function asPermissionModeOpt(label: string, value: unknown): PermissionMode | un
 
 function isPermissionMode(value: string): value is PermissionMode {
   return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+function asIdentityPolicyOpt(label: string, value: unknown): IdentityPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !isIdentityPolicy(value)) {
+    throw new CliError(`${label} must be one of: ${IDENTITY_POLICIES.join(" | ")}`);
+  }
+  return value;
 }
 
 /**
@@ -241,6 +308,30 @@ function readConfigFile(filePath: string): FileConfig {
     ...optBoolField("runtime.hideTools", runtimeObj.hideTools),
     ...optBoolField("runtime.hideCancelButton", runtimeObj.hideCancelButton),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...optNumberField(
+      "runtime.pingTimeoutSeconds",
+      asNonNegIntOpt("runtime.pingTimeoutSeconds", runtimeObj.pingTimeoutSeconds),
+      "pingTimeoutSeconds",
+    ),
+    ...optNumberField(
+      "runtime.handshakeTimeoutMs",
+      asNonNegIntOpt("runtime.handshakeTimeoutMs", runtimeObj.handshakeTimeoutMs),
+      "handshakeTimeoutMs",
+    ),
+  };
+
+  const accessObj = asObjectOpt("access", root.access) ?? {};
+  const access: FileAccess = {
+    ...optBoolField("access.enabled", accessObj.enabled),
+    ...optStringField("access.ownerOpenId", accessObj.ownerOpenId),
+  };
+
+  const identityObj = asObjectOpt("identity", root.identity) ?? {};
+  const identityPolicy = asIdentityPolicyOpt("identity.policy", identityObj.policy);
+  const identity: FileIdentity = {
+    ...(identityPolicy !== undefined ? { policy: identityPolicy } : {}),
+    ...optBoolField("identity.injectCredentials", identityObj.injectCredentials),
+    ...optBoolField("identity.promptContext", identityObj.promptContext),
   };
 
   const dataDir = asStringOpt("dataDir", root.dataDir);
@@ -250,6 +341,8 @@ function readConfigFile(filePath: string): FileConfig {
     credentials,
     ...(dataDir !== undefined ? { dataDir } : {}),
     runtime,
+    access,
+    identity,
     agents,
   };
 }
@@ -334,7 +427,9 @@ function optNumberField(
 // ---------- argv parsing --------------------------------------------------
 
 interface ParsedArgs {
-  readonly command: "proxy" | "agents" | "help" | "version";
+  readonly command: "proxy" | "agents" | "help" | "version" | "prepare" | "service";
+  /** For the `service` command: which sub-action to perform. */
+  readonly serviceAction?: "install" | "uninstall" | "status";
   /** Preset id (`--agent <id>`); resolved against the registry in {@link runProxy}. */
   readonly agentPreset?: string;
   /** Raw command from `proxy -- <cmd>`; mutually exclusive with `agentPreset`. */
@@ -351,6 +446,14 @@ interface ParsedArgs {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
+  /** `--owner <open_id>`: configured owner (overrides file / first-contact claim). */
+  readonly ownerOpenId?: string;
+  /** `--no-access-control`: run open (no allowlists, no card-action binding). */
+  readonly disableAccessControl?: boolean;
+  /** `--identity <policy>`: `lark-cli` identity policy. */
+  readonly identityPolicy?: IdentityPolicy;
+  /** `--inject-lark-credentials`: inject bot app credentials into the agent env. */
+  readonly injectLarkCredentials?: boolean;
 }
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -377,6 +480,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let hideTools: boolean | undefined;
   let hideCancelButton: boolean | undefined;
   let permissionMode: PermissionMode | undefined;
+  let ownerOpenId: string | undefined;
+  let disableAccessControl: boolean | undefined;
+  let identityPolicy: IdentityPolicy | undefined;
+  let injectLarkCredentials: boolean | undefined;
+  let serviceAction: ParsedArgs["serviceAction"];
   let agentPreset: string | undefined;
 
   const takeValue = (flag: string): string => {
@@ -413,6 +521,73 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     if (token === "agents") return finalize("agents");
     if (token === "help") return finalize("help");
     if (token === "version") return finalize("version");
+    if (token === "prepare") {
+      i++;
+      while (i < argv.length) {
+        const t = argv[i];
+        if (t === undefined) break;
+        if (t === "--agent") {
+          agentPreset = takeValue("--agent");
+          i++;
+          continue;
+        }
+        if (t === "--config") {
+          configPath = takeValue("--config");
+          i++;
+          continue;
+        }
+        if (t === "--data-dir") {
+          dataDir = takeValue("--data-dir");
+          i++;
+          continue;
+        }
+        throw new CliError(
+          `unknown option after \`prepare\`: ${t}` +
+            " (prepare accepts --agent <id>, --config <path>, --data-dir <dir>)",
+        );
+      }
+      return finalize("prepare");
+    }
+    if (token === "service") {
+      i++;
+      const action = argv[i];
+      if (action !== "install" && action !== "uninstall" && action !== "status") {
+        throw new CliError("service requires a subcommand: install | uninstall | status");
+      }
+      serviceAction = action;
+      i++;
+      while (i < argv.length) {
+        const t = argv[i];
+        if (t === undefined) break;
+        if (t === "--agent") {
+          agentPreset = takeValue("--agent");
+          i++;
+          continue;
+        }
+        if (t === "--config") {
+          configPath = takeValue("--config");
+          i++;
+          continue;
+        }
+        if (t === "--data-dir") {
+          dataDir = takeValue("--data-dir");
+          i++;
+          continue;
+        }
+        if (t === "--cwd") {
+          cwd = takeValue("--cwd");
+          i++;
+          continue;
+        }
+        if (t === "--domain") {
+          domain = validateDomain("--domain", takeValue("--domain"));
+          i++;
+          continue;
+        }
+        throw new CliError(`unknown option after \`service ${action}\`: ${t}`);
+      }
+      return finalize("service");
+    }
 
     switch (token) {
       case "--cwd":
@@ -441,6 +616,25 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--hide-cancel-button":
         hideCancelButton = true;
+        break;
+      case "--owner":
+        ownerOpenId = takeValue("--owner");
+        break;
+      case "--no-access-control":
+        disableAccessControl = true;
+        break;
+      case "--identity": {
+        const raw = takeValue("--identity");
+        if (!isIdentityPolicy(raw)) {
+          throw new CliError(
+            `--identity must be one of: ${IDENTITY_POLICIES.join(" | ")} (got: ${raw})`,
+          );
+        }
+        identityPolicy = raw;
+        break;
+      }
+      case "--inject-lark-credentials":
+        injectLarkCredentials = true;
         break;
       case "--permission-mode": {
         const raw = takeValue("--permission-mode");
@@ -534,6 +728,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(hideTools !== undefined ? { hideTools } : {}),
       ...(hideCancelButton !== undefined ? { hideCancelButton } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(ownerOpenId !== undefined ? { ownerOpenId } : {}),
+      ...(disableAccessControl !== undefined ? { disableAccessControl } : {}),
+      ...(identityPolicy !== undefined ? { identityPolicy } : {}),
+      ...(injectLarkCredentials !== undefined ? { injectLarkCredentials } : {}),
+      ...(serviceAction !== undefined ? { serviceAction } : {}),
     };
   }
 }
@@ -554,6 +753,13 @@ interface EffectiveConfig {
   readonly showTools: boolean;
   readonly showCancelButton: boolean;
   readonly permissionMode: PermissionMode;
+  readonly accessEnabled: boolean;
+  readonly accessOwnerOpenId?: string;
+  readonly identityPolicy: IdentityPolicy;
+  readonly identityInjectCredentials: boolean;
+  readonly identityPromptContext: boolean;
+  readonly pingTimeoutSec: number;
+  readonly handshakeTimeoutMs: number;
 }
 
 /**
@@ -609,8 +815,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   }
 
   // ----- dataDir: flag > env > file > XDG default -----
-  const rawDataDir = args.dataDir ?? envDataDirOverride() ?? file.dataDir ?? defaultDataDir();
-  const dataDir = path.resolve(rawDataDir);
+  const dataDir = resolveDataDir(args, file);
 
   // ----- runtime knobs: flag > file > built-in default -----
   const idleTimeoutMinutes =
@@ -636,6 +841,34 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     file.runtime.permissionMode ??
     DEFAULT_PERMISSION_MODE;
 
+  // ----- access control: flag > env > file > default -----
+  const accessEnabled = args.disableAccessControl === true ? false : (file.access.enabled ?? true);
+  const envOwner = process.env[ENV_OWNER];
+  const accessOwnerOpenId =
+    args.ownerOpenId ??
+    (envOwner !== undefined && envOwner.length > 0 ? envOwner : undefined) ??
+    file.access.ownerOpenId;
+
+  // ----- identity policy: flag > env > file > default -----
+  const envIdentity = process.env[ENV_IDENTITY];
+  if (envIdentity !== undefined && envIdentity.length > 0 && !isIdentityPolicy(envIdentity)) {
+    throw new CliError(
+      `${ENV_IDENTITY} must be one of: ${IDENTITY_POLICIES.join(" | ")} (got: ${envIdentity})`,
+    );
+  }
+  const identityPolicy =
+    args.identityPolicy ??
+    (envIdentity !== undefined && isIdentityPolicy(envIdentity) ? envIdentity : undefined) ??
+    file.identity.policy ??
+    DEFAULT_IDENTITY_POLICY;
+  const identityInjectCredentials =
+    args.injectLarkCredentials ?? file.identity.injectCredentials ?? false;
+  const identityPromptContext = file.identity.promptContext ?? true;
+
+  // ----- connection keepalive: file > default -----
+  const pingTimeoutSec = file.runtime.pingTimeoutSeconds ?? DEFAULT_PING_TIMEOUT_SECONDS;
+  const handshakeTimeoutMs = file.runtime.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+
   return {
     appId,
     appSecret,
@@ -650,10 +883,30 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     showTools: !hideTools,
     showCancelButton: !hideCancelButton,
     permissionMode,
+    accessEnabled,
+    ...(accessOwnerOpenId !== undefined ? { accessOwnerOpenId } : {}),
+    identityPolicy,
+    identityInjectCredentials,
+    identityPromptContext,
+    pingTimeoutSec,
+    handshakeTimeoutMs,
   };
 }
 
 // ---------- output helpers -----------------------------------------------
+
+function describeAccess(cfg: EffectiveConfig): string {
+  if (!cfg.accessEnabled) return "DISABLED (open to everyone in the app's scope)";
+  if (cfg.accessOwnerOpenId !== undefined) return `enabled (owner: ${cfg.accessOwnerOpenId})`;
+  return "enabled (owner: first user to DM the bot)";
+}
+
+function describeIdentity(cfg: EffectiveConfig): string {
+  const parts: string[] = [cfg.identityPolicy];
+  parts.push(cfg.identityInjectCredentials ? "credentials injected" : "no credentials");
+  parts.push(cfg.identityPromptContext ? "prompt context on" : "prompt context off");
+  return parts.join(", ");
+}
 
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -696,6 +949,10 @@ function printHelp(): void {
     `  --hide-cancel-button   Don't render the in-card "interrupt" button`,
     `  --permission-mode <m>  How to handle agent permission requests:`,
     `                         ${PERMISSION_MODES.join(" | ")} (default ${DEFAULT_PERMISSION_MODE})`,
+    `  --owner <open_id>      Set the bot owner (else the first user to DM it claims it)`,
+    `  --no-access-control    Disable access control (open to everyone — not recommended)`,
+    `  --identity <policy>    lark-cli identity policy: ${IDENTITY_POLICIES.join(" | ")} (default ${DEFAULT_IDENTITY_POLICY})`,
+    `  --inject-lark-credentials  Inject bot app credentials into the agent env (for lark-cli)`,
     `  -h, --help             Show this help and exit`,
     `  -v, --version          Show version and exit`,
     ``,
@@ -708,6 +965,13 @@ function printHelp(): void {
     `                         Combined with --agent, extra tokens are appended to the`,
     `                         preset's args.`,
     `  agents                 List built-in agent presets and exit.`,
+    `  service <action>       Manage an OS service (systemd user unit / launchd`,
+    `                         agent / Task Scheduler). Actions: install --agent <id>,`,
+    `                         uninstall, status. install writes the unit file and`,
+    `                         prints the command to activate it.`,
+    `  prepare                Pre-install npx-based agent shims into <data-dir>/shims so`,
+    `    --agent <preset>     proxy launches them via node (no npx cold-start). Omit`,
+    `                         --agent to prepare every npx-based preset.`,
     ``,
     `Configuration file (${CONFIG_FILE}):`,
     `  {`,
@@ -722,6 +986,8 @@ function printHelp(): void {
     `      "hideCancelButton": false,`,
     `      "permissionMode": "${DEFAULT_PERMISSION_MODE}"`,
     `    },`,
+    `    "access": { "enabled": true, "ownerOpenId": "ou_..." },`,
+    `    "identity": { "policy": "${DEFAULT_IDENTITY_POLICY}", "injectCredentials": false, "promptContext": true },`,
     `    "agents": {`,
     `      "my-claude": {`,
     `        "label": "Claude (custom)",`,
@@ -736,7 +1002,14 @@ function printHelp(): void {
     `  All fields are optional. CLI flags override file values; env vars`,
     `  ${ENV_APP_ID} / ${ENV_APP_SECRET} override the credentials block;`,
     `  ${ENV_DOMAIN} overrides credentials.domain;`,
-    `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode.`,
+    `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode;`,
+    `  ${ENV_OWNER} overrides access.ownerOpenId;`,
+    `  ${ENV_IDENTITY} overrides identity.policy.`,
+    ``,
+    `Access control (on by default): the bridge is private — only the owner,`,
+    `  admins, allowlisted users (DMs) and allowlisted groups may drive it.`,
+    `  Manage it in-chat as owner/admin: /access, /invite user|admin @user,`,
+    `  /invite group, /remove ..., /mention on|off.`,
     `  Entries under "agents" with a built-in id patch that preset; new ids`,
     `  add user presets and must define both \`label\` and \`command\`.`,
     ``,
@@ -822,6 +1095,15 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const cfg = resolveConfig(args, configPath, file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
 
+  // Prefer a prepared shim (launch via `node`, no `npx` resolution) when the
+  // operator has run `lark-acp prepare`; otherwise fall back to the original
+  // (`npx`) invocation unchanged.
+  const shimsDir = path.join(cfg.dataDir, SHIMS_DIRNAME);
+  const launch = preferPreparedShim(
+    { command: invocation.command, args: invocation.args },
+    shimsDir,
+  );
+
   const rootLogger = createPinoLogger();
   const cliLogger: LarkLogger = rootLogger.child({ name: "cli" });
 
@@ -830,19 +1112,59 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   );
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
   cliLogger.info(`domain:      ${cfg.domain} (${cfg.domainSource})`);
-  cliLogger.info(`agent:       ${invocation.displayLabel}`);
+  cliLogger.info(`agent:       ${invocation.displayLabel}${launch.prepared ? " [prepared]" : ""}`);
+  if (!launch.prepared && parseNpxInvocation(launch.invocation)) {
+    cliLogger.info(
+      `             tip: run \`${APP_NAME} prepare --agent ${args.agentPreset ?? "<id>"}\` to skip npx cold-start`,
+    );
+  }
   cliLogger.info(`cwd:         ${cfg.cwd}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
   cliLogger.info(`permission:  ${cfg.permissionMode}`);
+  cliLogger.info(`access:      ${describeAccess(cfg)}`);
+  cliLogger.info(`identity:    ${describeIdentity(cfg)}`);
+  cliLogger.info(
+    `connection:  ping-timeout ${cfg.pingTimeoutSec}s, handshake-timeout ${cfg.handshakeTimeoutMs}ms, auto-reconnect on`,
+  );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
 
+  const identity = new Identity({
+    policy: cfg.identityPolicy,
+    configDir: path.join(cfg.dataDir, LARK_CLI_CONFIG_DIRNAME),
+    injectCredentials: cfg.identityInjectCredentials,
+    injectPromptContext: cfg.identityPromptContext,
+    appId: cfg.appId,
+    appSecret: cfg.appSecret,
+    ...(typeof cfg.domain === "string" ? { domain: cfg.domain } : {}),
+    logger: rootLogger,
+  });
+
+  let accessControl: AccessControl | undefined;
+  if (cfg.accessEnabled) {
+    accessControl = new AccessControl({
+      store: new FileAccessStore(cfg.dataDir),
+      logger: rootLogger,
+      ...(cfg.accessOwnerOpenId !== undefined ? { configuredOwner: cfg.accessOwnerOpenId } : {}),
+    });
+  }
+
   const bridge = new LarkBridge({
-    lark: { appId: cfg.appId, appSecret: cfg.appSecret, domain: cfg.domain },
+    lark: {
+      appId: cfg.appId,
+      appSecret: cfg.appSecret,
+      domain: cfg.domain,
+      keepalive: {
+        pingTimeoutSec: cfg.pingTimeoutSec,
+        handshakeTimeoutMs: cfg.handshakeTimeoutMs,
+        autoReconnect: true,
+      },
+    },
     agent: {
-      command: invocation.command,
-      args: [...invocation.args],
+      command: launch.invocation.command,
+      args: [...launch.invocation.args],
       ...(invocation.env ? { env: { ...invocation.env } } : {}),
+      ...(args.agentPreset !== undefined ? { preset: args.agentPreset } : {}),
       cwd: cfg.cwd,
       showThoughts: cfg.showThoughts,
       showTools: cfg.showTools,
@@ -854,6 +1176,8 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       maxConcurrentChats: cfg.maxChats,
     },
     sessionStore,
+    ...(accessControl ? { accessControl } : {}),
+    identity,
     logger: rootLogger,
   });
 
@@ -874,6 +1198,180 @@ async function runProxy(args: ParsedArgs): Promise<void> {
 
   await bridge.start();
   cliLogger.info("bridge running. Press Ctrl+C to stop.");
+}
+
+// ---------- prepare ------------------------------------------------------
+
+/** The npx-based shim specs to install for a registry (optionally one preset). */
+function collectShimSpecs(
+  registry: Registry,
+  agentPreset: string | undefined,
+): { readonly id: string; readonly spec: string }[] {
+  if (agentPreset !== undefined) {
+    const entry = registry.get(agentPreset);
+    if (!entry) {
+      throw new CliError(
+        `unknown agent preset: ${agentPreset} (run \`${APP_NAME} agents\` to list presets)`,
+      );
+    }
+    const npx = parseNpxInvocation({ command: entry.preset.command, args: entry.preset.args });
+    if (!npx) {
+      throw new CliError(
+        `agent preset "${agentPreset}" is not an npx-based shim — nothing to prepare`,
+      );
+    }
+    return [{ id: agentPreset, spec: npx.spec }];
+  }
+
+  const out: { id: string; spec: string }[] = [];
+  for (const [id, entry] of registry) {
+    const npx = parseNpxInvocation({ command: entry.preset.command, args: entry.preset.args });
+    if (npx) out.push({ id, spec: npx.spec });
+  }
+  return out;
+}
+
+/**
+ * Install `npx`-based shim packages into `<dataDir>/shims` so `proxy` can
+ * launch them directly with `node` (no `npx` cold-start). Idempotent — re-run
+ * to update.
+ *
+ * @throws {CliError} when the preset is unknown / not a shim, or `npm install`
+ *         fails.
+ */
+function runPrepare(args: ParsedArgs): void {
+  const configPath = resolveConfigPath(args.configPath);
+  const file = readConfigFile(configPath);
+  const registry = buildRegistry(file.agents);
+  const shimsDir = path.join(resolveDataDir(args, file), SHIMS_DIRNAME);
+
+  const specs = collectShimSpecs(registry, args.agentPreset);
+  if (specs.length === 0) {
+    process.stdout.write("No npx-based agent presets to prepare.\n");
+    return;
+  }
+
+  fs.mkdirSync(shimsDir, { recursive: true });
+  process.stdout.write(
+    `Preparing ${specs.length} shim(s) into ${shimsDir}:\n` +
+      specs.map((s) => `  - ${s.id}: ${s.spec}`).join("\n") +
+      "\n\n",
+  );
+
+  const pkgSpecs = [...new Set(specs.map((s) => s.spec))];
+  const result = spawnSync("npm", ["install", "--prefix", shimsDir, ...pkgSpecs], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (result.error) {
+    throw new CliError(`failed to run npm: ${formatError(result.error)}`);
+  }
+  if (result.status !== 0) {
+    throw new CliError(`npm install failed (exit code ${result.status ?? "unknown"})`);
+  }
+
+  process.stdout.write(
+    `\nPrepared. \`${APP_NAME} proxy --agent <id>\` will now launch these via node (no npx cold-start).\n`,
+  );
+}
+
+// ---------- service ------------------------------------------------------
+
+function currentServicePlatform(): ServicePlatform {
+  const p = process.platform;
+  if (p === "linux" || p === "darwin" || p === "win32") return p;
+  throw new CliError(`service management is not supported on platform "${p}"`);
+}
+
+/**
+ * Generate / install / remove / query an OS service that runs the bridge
+ * unattended. `install` writes the platform unit file and prints the exact
+ * commands to activate it (activation is left to the operator — see
+ * `service.ts`). `uninstall` removes the file; `status` prints the query
+ * command.
+ *
+ * @throws {CliError} on an unsupported platform, missing `--agent` for
+ *         install, or an unresolvable config.
+ */
+function runService(args: ParsedArgs): void {
+  const platform = currentServicePlatform();
+  const configPath = resolveConfigPath(args.configPath);
+  const file = readConfigFile(configPath);
+  const action = args.serviceAction ?? "status";
+
+  // status / uninstall don't need credentials — only the dataDir + home to
+  // locate the unit file. install embeds the resolved run config.
+  const baseSpec = {
+    platform,
+    nodePath: process.execPath,
+    scriptPath: fileURLToPath(import.meta.url),
+    workingDir: process.cwd(),
+    homeDir: os.homedir(),
+    dataDir: resolveDataDir(args, file),
+  } satisfies Omit<ServiceSpec, "args">;
+
+  if (action === "status") {
+    const def = buildServiceDefinition({ ...baseSpec, args: [] });
+    const exists = fs.existsSync(def.filePath);
+    process.stdout.write(
+      `service: ${def.label}\n` +
+        `unit file: ${def.filePath} ${exists ? "(present)" : "(not installed)"}\n\n` +
+        `check status with:\n  ${def.status}\n`,
+    );
+    return;
+  }
+
+  if (action === "uninstall") {
+    const def = buildServiceDefinition({ ...baseSpec, args: [] });
+    if (fs.existsSync(def.filePath)) {
+      fs.rmSync(def.filePath);
+      process.stdout.write(`Removed ${def.filePath}\n`);
+    } else {
+      process.stdout.write(`No unit file at ${def.filePath}\n`);
+    }
+    process.stdout.write(`\nStop / deregister the service with:\n`);
+    for (const cmd of def.deactivate) process.stdout.write(`  ${cmd}\n`);
+    return;
+  }
+
+  // install
+  const agentId = args.agentPreset;
+  if (agentId === undefined) {
+    throw new CliError("service install requires --agent <preset> (the service needs a fixed agent)");
+  }
+  const registry = buildRegistry(file.agents);
+  if (!registry.has(agentId)) {
+    throw new CliError(
+      `unknown agent preset: ${agentId} (run \`${APP_NAME} agents\` to list presets)`,
+    );
+  }
+  const cfg = resolveConfig(args, configPath, file);
+
+  const svcArgs = [
+    "--config",
+    configPath,
+    "--data-dir",
+    cfg.dataDir,
+    "--cwd",
+    cfg.cwd,
+    "--domain",
+    String(cfg.domain),
+    "proxy",
+    "--agent",
+    agentId,
+  ];
+  const def = buildServiceDefinition({ ...baseSpec, workingDir: cfg.cwd, dataDir: cfg.dataDir, args: svcArgs });
+
+  fs.mkdirSync(path.dirname(def.filePath), { recursive: true });
+  fs.writeFileSync(def.filePath, def.content, "utf-8");
+
+  process.stdout.write(
+    `Wrote ${def.label} unit to:\n  ${def.filePath}\n\n` +
+      `Activate it with:\n` +
+      def.activate.map((cmd) => `  ${cmd}`).join("\n") +
+      `\n\nCredentials/settings are read from ${configPath} at run time — make sure that file ` +
+      `contains valid credentials (the service won't see your shell environment).\n`,
+  );
 }
 
 async function main(): Promise<void> {
@@ -902,6 +1400,12 @@ async function main(): Promise<void> {
       printAgents(buildRegistry(file.agents));
       return;
     }
+    case "prepare":
+      runPrepare(args);
+      return;
+    case "service":
+      runService(args);
+      return;
     case "proxy":
       await runProxy(args);
       return;

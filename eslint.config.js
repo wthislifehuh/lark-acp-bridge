@@ -16,7 +16,7 @@ export default defineConfig(
       parserOptions: {
         projectService: {
           defaultProject: "./tsconfig.eslint.json",
-          allowDefaultProject: ["eslint.config.js", "tests/*.ts", "bin/*.test.ts"],
+          allowDefaultProject: ["eslint.config.js"],
         },
         tsconfigRootDir,
       },

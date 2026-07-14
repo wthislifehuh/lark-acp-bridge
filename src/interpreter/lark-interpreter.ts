@@ -123,13 +123,36 @@ interface LocationPayload {
 // ---- Public API ----
 
 /**
+ * Target of an `/invite` / `/remove` access command.
+ *
+ * `openIds` are the non-bot mention targets carried by the message; the
+ * interpreter surfaces them from `message.mentions` so the bridge doesn't
+ * have to re-parse the raw event.
+ */
+export type AccessCommandTarget =
+  | { readonly type: "user"; readonly openIds: readonly string[] }
+  | { readonly type: "admin"; readonly openIds: readonly string[] }
+  | { readonly type: "group" };
+
+/**
  * High-level commands a user can issue via plain-text messages.
  *
- * Detection is intentionally strict: only exact, whitespace-trimmed matches
- * after stripping the bot's own self-mention. Anything else falls through
- * to {@link InterpretedMessage} `kind: "prompt"`.
+ * Detection is intentionally strict: session commands (`cancel` / `new`)
+ * only match exact, whitespace-trimmed text; access commands match a
+ * leading `/invite` `/remove` `/access` `/mention` token. Anything else
+ * falls through to {@link InterpretedMessage} `kind: "prompt"`.
  */
-export type LarkCommand = { readonly kind: "cancel" } | { readonly kind: "new" };
+export type LarkCommand =
+  | { readonly kind: "cancel" }
+  | { readonly kind: "new" }
+  | { readonly kind: "help" }
+  | { readonly kind: "status" }
+  | { readonly kind: "config" }
+  | { readonly kind: "access-show" }
+  | { readonly kind: "access-usage"; readonly usage: string }
+  | { readonly kind: "mention-toggle"; readonly enabled: boolean }
+  | { readonly kind: "invite"; readonly target: AccessCommandTarget }
+  | { readonly kind: "remove"; readonly target: AccessCommandTarget };
 
 /**
  * Outcome of interpreting a Lark inbound message.
@@ -154,6 +177,9 @@ export interface InterpretOptions {
 
 const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", "取消", "停止"]);
 const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
+const HELP_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/help", "帮助"]);
+const STATUS_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/status", "状态"]);
+const CONFIG_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/config", "配置"]);
 
 /**
  * Interpret a Lark inbound message event.
@@ -175,7 +201,7 @@ export function interpretLarkMessage(
   if (message.message_type === "text") {
     const text = extractTextContent(message.content, message.mentions, opts.botOpenId);
     if (!text) return { kind: "empty" };
-    const command = detectCommand(text);
+    const command = detectCommand(text, message.mentions, opts.botOpenId);
     if (command) return { kind: "command", command };
     return { kind: "prompt", blocks: [{ type: "text", text }] };
   }
@@ -214,10 +240,75 @@ function blocksToPrompt(blocks: acp.ContentBlock[]): InterpretedMessage {
   return blocks.length ? { kind: "prompt", blocks } : { kind: "empty" };
 }
 
-function detectCommand(text: string): LarkCommand | null {
+const INVITE_USAGE =
+  "用法: /invite user @用户... | /invite admin @用户... | /invite group（当前群）";
+const REMOVE_USAGE =
+  "用法: /remove user @用户... | /remove admin @用户... | /remove group（当前群）";
+const MENTION_USAGE = "用法: /mention on | /mention off";
+
+function detectCommand(
+  text: string,
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): LarkCommand | null {
   if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
   if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
-  return null;
+  if (HELP_COMMAND_TOKENS.has(text)) return { kind: "help" };
+  if (STATUS_COMMAND_TOKENS.has(text)) return { kind: "status" };
+  if (CONFIG_COMMAND_TOKENS.has(text)) return { kind: "config" };
+
+  const tokens = text.split(/\s+/).filter((t) => t.length > 0);
+  const head = tokens[0]?.toLowerCase();
+  if (!head?.startsWith("/")) return null;
+
+  switch (head) {
+    case "/access":
+      return { kind: "access-show" };
+    case "/mention": {
+      const arg = tokens[1]?.toLowerCase();
+      if (arg === "on") return { kind: "mention-toggle", enabled: true };
+      if (arg === "off") return { kind: "mention-toggle", enabled: false };
+      return { kind: "access-usage", usage: MENTION_USAGE };
+    }
+    case "/invite":
+    case "/remove": {
+      const target = parseAccessTarget(tokens[1]?.toLowerCase(), mentions, botOpenId);
+      if (!target) {
+        return { kind: "access-usage", usage: head === "/invite" ? INVITE_USAGE : REMOVE_USAGE };
+      }
+      return head === "/invite" ? { kind: "invite", target } : { kind: "remove", target };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Build an {@link AccessCommandTarget} from a subcommand token + message mentions. */
+function parseAccessTarget(
+  sub: string | undefined,
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): AccessCommandTarget | null {
+  if (sub === "group") return { type: "group" };
+  if (sub !== "user" && sub !== "admin") return null;
+  const openIds = collectMentionTargets(mentions, botOpenId);
+  if (openIds.length === 0) return null;
+  return { type: sub, openIds };
+}
+
+/** Non-bot mention `open_id`s, de-duplicated, in first-seen order. */
+function collectMentionTargets(
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): readonly string[] {
+  if (!mentions) return [];
+  const seen = new Set<string>();
+  for (const m of mentions) {
+    const openId = m.id.open_id;
+    if (!openId || openId === botOpenId) continue;
+    seen.add(openId);
+  }
+  return [...seen];
 }
 
 // ---- Private parsers ----

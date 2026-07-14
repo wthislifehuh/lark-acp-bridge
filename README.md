@@ -9,7 +9,7 @@
 
 > 💡 **Credits**: this project is heavily modified and extended from the original [4t145/lark-acp](https://github.com/4t145/lark-acp) — adding native support for the Kiro and Amazon Q agents, Feishu/Lark region (domain) switching, Windows build support, and other fixes. Many thanks to [@4t145](https://github.com/4t145) for the excellent foundation.
 
-**Turn your Feishu / Lark bot into an AI coding agent.** `lark-acp` bridges a [Feishu/Lark](https://open.larksuite.com/) bot to **any AI agent that speaks the [Agent Client Protocol (ACP)](https://agentcommunicationprotocol.dev/)** — Claude Code, Kiro CLI, OpenAI Codex, Google Gemini CLI, GitHub Copilot CLI, OpenCode, Amazon Q Developer CLI, or your own ACP server.
+**Turn your Feishu / Lark bot into an AI coding agent.** `lark-acp` bridges a [Feishu/Lark](https://open.larksuite.com/) bot to **any AI agent that speaks the [Agent Client Protocol (ACP)](https://agentcommunicationprotocol.dev/)** — Claude Code, Kiro CLI, OpenAI Codex, Google Gemini CLI, GitHub Copilot CLI, OpenCode, Amazon Q Developer CLI, Microsoft Copilot Studio agents, Microsoft 365 Copilot, or your own ACP server.
 
 You send a message in Feishu/Lark; the agent runs on your machine; its thinking, tool calls, and answer stream into a single interactive Feishu card. Tool-call authorization, task interruption, and cross-restart session resume are all handled inside the card.
 
@@ -28,7 +28,7 @@ For real-world use we strongly recommend pairing this with the [Lark CLI](https:
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference) — [presets](#built-in-agent-presets) · [options](#global-options) · [in-chat commands](#in-chat-commands) · [config file](#configuration-file) · [env vars](#environment-variables)
-- [Connecting specific agents](#connecting-specific-agents) — [Kiro](#connecting-kiro) · [Gemini](#connecting-gemini) · [Amazon Q](#connecting-amazon-q)
+- [Connecting specific agents](#connecting-specific-agents) — [Kiro](#connecting-kiro) · [Gemini](#connecting-gemini) · [Amazon Q](#connecting-amazon-q) · [Copilot Studio](#connecting-microsoft-copilot-studio) · [M365 Copilot](#connecting-microsoft-365-copilot)
 - [Feishu/Lark developer console setup](#feishulark-developer-console-setup)
 - [Deployment](#deployment)
 - [Using as a library](#using-as-a-library)
@@ -55,6 +55,8 @@ For real-world use we strongly recommend pairing this with the [Lark CLI](https:
 - **Per-tool permission cards** — when the agent wants to run a tool, the bridge pops an authorization card and pauses the agent until you answer (unanswered requests auto-cancel after 5 minutes; policy configurable via [`--permission-mode`](#global-options)).
 - **Session persistence** — chat → session mappings are stored on disk; agents that support ACP `session/load` / resume pick up right where they left off after a bridge restart.
 - **Concurrent chats** — each Feishu chat gets its own agent session, with idle eviction (`--idle-timeout`, `--max-chats`).
+
+---
 
 ## Quick start
 
@@ -121,6 +123,8 @@ node dist/bin/lark-acp.js proxy --agent claude
 ```
 lark-acp [global-options] proxy --agent <preset> [-- <extra-args>...]
 lark-acp [global-options] proxy -- <agent-cmd> [agent-args...]
+lark-acp prepare [--agent <preset>]
+lark-acp service <install|uninstall|status> [--agent <preset>]
 lark-acp agents
 lark-acp help
 lark-acp version
@@ -137,17 +141,19 @@ Global options must come before the `proxy` subcommand (`--domain` is also accep
 
 ### Built-in agent presets
 
-| Preset         | Description                                                                                                                                                       |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`       | Claude Code via Zed's ACP adapter. Run `claude` in a terminal once first to log in.                                                                               |
-| `claude-agent` | Claude Agent SDK adapter — direct Anthropic API. Needs `ANTHROPIC_API_KEY`.                                                                                       |
-| `codex`        | OpenAI Codex via Zed's ACP adapter.                                                                                                                               |
-| `copilot`      | GitHub Copilot CLI (native `--acp`).                                                                                                                              |
-| `gemini`       | Google Gemini CLI (experimental `--acp`). Personal "Sign in with Google" was discontinued — use an API key instead, see [Connecting Gemini](#connecting-gemini).  |
-| `opencode`     | OpenCode. Assumes `opencode` is on `$PATH`.                                                                                                                       |
-| `kiro`         | Kiro CLI (native ACP via `kiro-cli acp`). Assumes `kiro-cli` is on `$PATH` and logged in. See [Connecting Kiro](#connecting-kiro).                                |
-| `q`            | Amazon Q Developer CLI via the bundled adapter (`q` has no native ACP). Needs `q` on `$PATH` and `q login` done. See [Connecting Amazon Q](#connecting-amazon-q). |
-| `mock`         | Built-in scripted agent (thoughts / tool calls / permission cards / Markdown) for local end-to-end debugging.                                                     |
+| Preset           | Description                                                                                                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`         | Claude Code via Zed's ACP adapter. Run `claude` in a terminal once first to log in.                                                                                                                 |
+| `claude-agent`   | Claude Agent SDK adapter — direct Anthropic API. Needs `ANTHROPIC_API_KEY`.                                                                                                                         |
+| `codex`          | OpenAI Codex via Zed's ACP adapter.                                                                                                                                                                 |
+| `copilot`        | GitHub Copilot CLI (native `--acp`).                                                                                                                                                                |
+| `gemini`         | Google Gemini CLI (experimental `--acp`). Personal "Sign in with Google" was discontinued — use an API key instead, see [Connecting Gemini](#connecting-gemini).                                    |
+| `opencode`       | OpenCode. Assumes `opencode` is on `$PATH`.                                                                                                                                                         |
+| `kiro`           | Kiro CLI (native ACP via `kiro-cli acp`). Assumes `kiro-cli` is on `$PATH` and logged in. See [Connecting Kiro](#connecting-kiro).                                                                  |
+| `q`              | Amazon Q Developer CLI via the bundled adapter (`q` has no native ACP). Needs `q` on `$PATH` and `q login` done. See [Connecting Amazon Q](#connecting-amazon-q).                                   |
+| `copilot-studio` | Microsoft Copilot Studio agent via the bundled Direct-to-Engine adapter. Needs `COPILOT_STUDIO_*` config + a one-time login. See [Connecting Copilot Studio](#connecting-microsoft-copilot-studio). |
+| `m365-copilot`   | Microsoft 365 Copilot (BizChat) via the bundled Graph Chat API adapter (preview API; needs a Copilot license). See [Connecting M365 Copilot](#connecting-microsoft-365-copilot).                    |
+| `mock`           | Built-in scripted agent (thoughts / tool calls / permission cards / Markdown) for local end-to-end debugging.                                                                                       |
 
 Agents not covered by a preset can be launched as a raw command:
 
@@ -171,6 +177,10 @@ You can also persist your own presets in the config file's `agents` field (see [
 | `--hide-tools`          | Don't render tool calls in the card                                                                                                                     |
 | `--hide-cancel-button`  | Don't render the "cancel current task" button at the bottom of the card                                                                                 |
 | `--permission-mode <m>` | Tool authorization policy: `alwaysAsk` (default, pops a card for the user) / `alwaysAllow` (auto-approve) / `alwaysDeny` (auto-reject)                  |
+| `--owner <open_id>`     | Set the bot owner. When omitted, the first user to DM the bot claims ownership ([access control](#access-control) is on by default)                     |
+| `--no-access-control`   | Disable access control entirely — open the bot to everyone in the app's scope (not recommended)                                                        |
+| `--identity <policy>`   | `lark-cli` [identity policy](#identity--prompt-context): `bot-only` (default) / `user-default`                                                          |
+| `--inject-lark-credentials` | Inject the bot app credentials into the agent subprocess env (for `lark-cli`; off by default — see the security note)                              |
 | `-h`, `--help`          | Show help                                                                                                                                               |
 | `-v`, `--version`       | Show version                                                                                                                                            |
 
@@ -182,6 +192,11 @@ Send these directly to the bot (in a group, @mention the bot first):
 | ------------------------------------- | --------------------------------------------------------------------------------- |
 | `/cancel` / `/stop` / `取消` / `停止` | Interrupt the current task (the agent process stays alive; the session continues) |
 | `/new` / `/restart`                   | Reset the session — the next message starts a brand-new agent session             |
+| `/help` / `帮助`                      | Show the available in-chat commands                                               |
+| `/status` / `状态`                    | Show the current status (identity, access, session, agent, WebSocket connection)  |
+| `/config` / `配置`                    | Show the effective configuration (presentation, permission mode, access, identity) — owner/admin only |
+
+Owner/admin-only [access-control](#access-control) commands: `/access`, `/invite user\|admin @…`, `/invite group`, `/remove …`, `/mention on\|off`.
 
 ### Configuration file
 
@@ -207,6 +222,32 @@ All fields are optional:
     "hideTools": false,
     "hideCancelButton": false,
     "permissionMode": "alwaysAsk",
+    // WebSocket liveness watchdog window in seconds (default 60; 0 disables).
+    "pingTimeoutSeconds": 60,
+    // Abort a WebSocket handshake that stalls past this many ms (default 15000; 0 disables).
+    "handshakeTimeoutMs": 15000,
+  },
+  "access": {
+    // Access control is on by default; set false to open the bot to everyone.
+    "enabled": true,
+    // Pin the owner; when omitted the first user to DM the bot claims it.
+    "ownerOpenId": "ou_xxxxxxxxxxxxxxxx",
+  },
+  "identity": {
+    // lark-cli identity policy: "bot-only" (default) or "user-default".
+    "policy": "bot-only",
+    // Inject bot app credentials into the agent env (for lark-cli). Off by default.
+    "injectCredentials": false,
+    // Prepend a chat/sender context block to prompts. On by default.
+    "promptContext": true,
+  },
+  "identity": {
+    // lark-cli acting identity: "bot-only" (default) or "user-default".
+    "policy": "bot-only",
+    // Inject the bot app credentials into the agent env for lark-cli (default false).
+    "injectCredentials": false,
+    // Prepend a chat/sender context block to each prompt (default true).
+    "promptContext": true,
   },
   "agents": {
     // Patch an existing built-in preset — only write the fields you change
@@ -227,6 +268,21 @@ All fields are optional:
 
 `lark-acp agents` lists every preset available under the current config, tagged with its source (`[built-in]` / `[user]` / `[overridden]`).
 
+### Faster cold start: `lark-acp prepare`
+
+Several presets (`claude`, `codex`, `copilot`, `gemini`, `claude-agent`) launch a translation shim via `npx -y <pkg>`. `npx` re-resolves the package on every spawn — adding cold-start latency and, unpinned, silently pulling whatever is "latest".
+
+`lark-acp prepare` installs those shims **once** into `<data-dir>/shims`. After that, `proxy` launches them directly with `node` (no `npx` resolution, no network on spawn, and a version pinned by the prepared install). Nothing else changes — the same shim runs, so permission cards and every other behavior are identical.
+
+```bash
+lark-acp prepare                 # prepare every npx-based preset
+lark-acp prepare --agent claude  # prepare just one
+```
+
+When a shim isn't prepared, `proxy` falls back to the original `npx` invocation, so this is purely opt-in. Native-ACP presets (`kiro`, `opencode`) and the bundled adapters (`q`, `copilot-studio`, `m365-copilot`, `mock`) don't use `npx` and need no preparation.
+
+> Why not bundle the shims as dependencies? They're heavyweight agent packages (the Copilot/Gemini CLIs, the Zed adapters); making them hard dependencies would bloat every install — including for users who only run a native-ACP agent like Kiro. `prepare` keeps installs lean while still giving a fully offline, pinned launch path when you want it.
+
 ### Environment variables
 
 | Variable                   | Effect                             |
@@ -237,9 +293,12 @@ All fields are optional:
 | `LARK_ACP_CONFIG`          | Overrides the config file path     |
 | `LARK_ACP_DATA_DIR`        | Overrides the session-storage dir  |
 | `LARK_ACP_PERMISSION_MODE` | Overrides `runtime.permissionMode` |
+| `LARK_ACP_OWNER`           | Overrides `access.ownerOpenId`     |
+| `LARK_ACP_IDENTITY`        | Overrides `identity.policy`        |
 
 ## Connecting specific agents
 
+---
 ### Connecting Kiro
 
 Kiro CLI (AWS's official successor to Amazon Q Developer CLI) supports ACP natively via `kiro-cli acp` — no adapter needed. Install [Kiro CLI](https://kiro.dev/docs/cli/), log in once, then:
@@ -250,6 +309,7 @@ lark-acp proxy --agent kiro
 
 You get the full experience: per-tool permission cards, the thought/tool timeline, and session resume across bridge restarts (Kiro advertises ACP `loadSession`).
 
+---
 ### Connecting Gemini
 
 On 2026-06-18 Google discontinued the free "Sign in with Google" OAuth login of Gemini CLI for **personal accounts** (Gemini Code Assist for individuals / Google AI Pro / Ultra), steering users to [Antigravity](https://antigravity.google) instead. Picking "1. Sign in with Google" on first run of `gemini` now fails with:
@@ -291,6 +351,7 @@ lark-acp proxy --agent gemini
 - Free-tier rate limits are low (roughly a few hundred requests/day on the Flash models). A **Google One / AI Pro subscription does not automatically unlock paid API quota** — if you hit a 429 with `limit: 0`, attach a billing account in Google Cloud.
 - Enterprises / teams can use **3. Vertex AI** from the auth menu instead (unaffected by the shutdown); set `GOOGLE_GENAI_USE_VERTEXAI=true` plus `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`.
 
+---
 ### Connecting Amazon Q
 
 Amazon Q Developer CLI (`q`) has **no native ACP** — AWS moved that investment to its successor, Kiro CLI (which ships native ACP via `kiro-cli acp`, see the `kiro` preset above), and stated they won't implement it for `q` ([feature request #2703](https://github.com/aws/amazon-q-developer-cli/issues/2703)). This project therefore ships a lightweight adapter, `lark-acp-q`, that translates ACP into `q chat` invocations so the classic `q` can still plug in.
@@ -408,6 +469,140 @@ node dist/bin/lark-acp.js proxy -- node ./dist/bin/q-acp.js
 
 In Feishu, check off in order: ① a reply card streams in; ② a follow-up question shows it remembered turn 1 (context replay working); ③ the cancel button interrupts a long answer; ④ restart the bridge, then message again — the session resumes from the persisted transcript; ⑤ `q logout` then message — you should get an "Authentication required" failure card rather than a generic crash.
 
+---
+### Connecting Microsoft Copilot Studio
+
+[Microsoft Copilot Studio](https://copilotstudio.microsoft.com/) agents have no ACP-native CLI, so this project ships an adapter, **`lark-acp-copilot-studio`**, that bridges ACP to Microsoft's official **"Direct to Engine"** client ([`@microsoft/agents-copilotstudio-client`](https://www.npmjs.com/package/@microsoft/agents-copilotstudio-client), part of the Microsoft 365 Agents SDK). Answers stream token-by-token into the Feishu card; multi-turn context and cross-restart resume are handled by reusing the server-side conversation id. See [`docs/microsoft-copilot-plan.md`](docs/microsoft-copilot-plan.md) for the full design and the research behind it.
+
+> **Two inherent limitations** (Copilot Studio's conversational API exposes neither, so they are not bugs): no per-tool permission cards, and no separate thought/tool timeline — the answer streams as one message.
+
+**1. Register an Entra ID app** (one-time, in the [Azure/Entra portal](https://entra.microsoft.com)):
+
+- _Identity → Applications → App registrations → New registration_. Single-tenant is fine. Record the **Application (client) ID** and **Directory (tenant) ID**.
+- _Authentication → Add a platform → Mobile and desktop applications_, add redirect URI `http://localhost` (device-code needs a public-client platform registered).
+- _API permissions → Add a permission → APIs my organization uses_ → search **Power Platform API** (appId `8578e004-a5c6-46e7-913e-12f58912df43`) → **Delegated** → **CopilotStudio → `CopilotStudio.Copilots.Invoke`** → Add. Grant admin consent if your tenant requires it.
+  - If "Power Platform API" doesn't show up, register its service principal once: `az ad sp create --id 8578e004-a5c6-46e7-913e-12f58912df43` (or the PowerShell `New-MgServicePrincipal -AppId ...` equivalent), then retry.
+
+**2. Find your agent's metadata**: in Copilot Studio open your agent → _Settings → Advanced → Metadata_ and copy **Environment ID** and **Schema name** (the schema name looks like `cr1a2_myAgent`). Publish the agent at least once.
+
+**3. Write the config** (patching the built-in `copilot-studio` preset — all values go in `agents.copilot-studio.env`):
+
+```jsonc
+{
+  "agents": {
+    "copilot-studio": {
+      "env": {
+        "COPILOT_STUDIO_ENVIRONMENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "COPILOT_STUDIO_SCHEMA_NAME": "cr1a2_myAgent",
+        "COPILOT_STUDIO_TENANT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "COPILOT_STUDIO_APP_CLIENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      },
+    },
+  },
+}
+```
+
+**4. Log in once** (device-code flow — prints a code you paste at <https://microsoft.com/devicelogin>). The standalone `login` command reads its two required values from the environment (it does **not** read `config.json` — that env is only injected when the bridge spawns the adapter), so pass them inline:
+
+```bash
+# bash / WSL
+COPILOT_STUDIO_TENANT_ID=<tenant-id> COPILOT_STUDIO_APP_CLIENT_ID=<client-id> lark-acp-copilot-studio login
+```
+
+```powershell
+# Windows PowerShell
+$env:COPILOT_STUDIO_TENANT_ID="<tenant-id>"; $env:COPILOT_STUDIO_APP_CLIENT_ID="<client-id>"; lark-acp-copilot-studio login
+```
+
+The refresh token is cached under `~/.lark-acp/copilot-studio` (the same default `COPILOT_STUDIO_DATA_DIR` the bridge uses), so once logged in you just start the bridge:
+
+```bash
+lark-acp proxy --agent copilot-studio
+```
+
+The token is refreshed silently afterwards; `lark-acp-copilot-studio logout` clears the cache.
+
+**Environment variables** (set under `agents.copilot-studio.env`):
+
+| Variable                            | Default                      | Description                                                                                             |
+| ----------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `COPILOT_STUDIO_ENVIRONMENT_ID`     | —                            | Power Platform environment id (from _Settings → Advanced → Metadata_)                                   |
+| `COPILOT_STUDIO_SCHEMA_NAME`        | —                            | Agent schema name (same place)                                                                          |
+| `COPILOT_STUDIO_DIRECT_CONNECT_URL` | —                            | Alternative to the two above: the "connection string" URL from _Channels_. When set, it takes priority. |
+| `COPILOT_STUDIO_TENANT_ID`          | —                            | Entra directory (tenant) id                                                                             |
+| `COPILOT_STUDIO_APP_CLIENT_ID`      | —                            | Entra application (client) id                                                                           |
+| `COPILOT_STUDIO_CLOUD`              | `Prod`                       | Power Platform cloud (`Prod` / `Gov` / `High` / `DoD` / `Mooncake` …) for sovereign tenants             |
+| `COPILOT_STUDIO_AGENT_TYPE`         | `Published`                  | `Published` or `Prebuilt`                                                                               |
+| `COPILOT_STUDIO_AUTH_MODE`          | inferred                     | `device-code` (default) / `client-secret` (app-only, see note) / `static-token`                         |
+| `COPILOT_STUDIO_CLIENT_SECRET`      | —                            | Client secret for `client-secret` mode                                                                  |
+| `COPILOT_STUDIO_STATIC_TOKEN`       | —                            | A pre-acquired bearer token (`static-token` mode; mainly for testing)                                   |
+| `COPILOT_STUDIO_LOCALE`             | agent default                | BCP-47 locale sent when starting a conversation, e.g. `zh-CN`                                           |
+| `COPILOT_STUDIO_EMIT_START_EVENT`   | `true`                       | Whether the agent plays its greeting/opening topic on a new conversation                                |
+| `COPILOT_STUDIO_DATA_DIR`           | `~/.lark-acp/copilot-studio` | Token cache + session-id storage directory                                                              |
+| `COPILOT_STUDIO_TURN_TIMEOUT_MS`    | `300000`                     | Per-turn timeout                                                                                        |
+
+> **App-only (unattended) auth**: `COPILOT_STUDIO_AUTH_MODE=client-secret` uses the **Application** `CopilotStudio.Copilots.Invoke` permission (needs admin consent) so no interactive login is required. Microsoft's SDK samples still warn that service-to-service is "in active development" for Copilot Studio, so availability is tenant-dependent — test it before relying on it. The default device-code mode with a dedicated service account is the reliable baseline.
+
+---
+### Connecting Microsoft 365 Copilot
+
+[Microsoft 365 Copilot](https://m365.cloud.microsoft/chat) (the work chat, a.k.a. BizChat) is bridged by the **`lark-acp-m365`** adapter over the official **[Microsoft 365 Copilot Chat API](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/chat/overview)** (Microsoft Graph). Answers stream into the card and are grounded in the signed-in user's work data (mail, files, meetings, chats) plus the web.
+
+> ⚠️ **Read before you invest setup time — the Chat API is public preview with hard constraints:**
+>
+> - **Delegated auth only.** The bridge talks to M365 Copilot _as one signed-in user_ (the account you log in with). There is no bot/app-only identity, so every Feishu user shares that account's data scope — use a **dedicated service account** whose access is acceptable to expose.
+> - **Every calling user needs a Microsoft 365 Copilot license** (~$30/user/mo). No consumer/personal Microsoft accounts.
+> - **Preview (`/beta`)** — Microsoft may change it and does not support it for production.
+> - **Not available in the China (21Vianet) cloud.** Check your tenant's cloud first.
+
+**1. Register an Entra ID app** — same as the Copilot Studio steps above (single-tenant, add a **Mobile and desktop** platform with redirect `http://localhost`), but add **Microsoft Graph → Delegated** permissions — **all** of: `Sites.Read.All`, `Mail.Read`, `People.Read.All`, `OnlineMeetingTranscript.Read.All`, `Chat.Read`, `ChannelMessage.Read.All`, `ExternalItem.Read.All`. These require **admin consent**.
+
+**2. Write the config**:
+
+```jsonc
+{
+  "agents": {
+    "m365-copilot": {
+      "env": {
+        "M365_COPILOT_TENANT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "M365_COPILOT_APP_CLIENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "M365_COPILOT_TIMEZONE": "Asia/Shanghai",
+      },
+    },
+  },
+}
+```
+
+**3. Log in once, then run**. As with Copilot Studio, the standalone `login` command reads its two required values from the environment (not `config.json`):
+
+```bash
+# bash / WSL
+M365_COPILOT_TENANT_ID=<tenant-id> M365_COPILOT_APP_CLIENT_ID=<client-id> lark-acp-m365 login
+```
+
+```powershell
+# Windows PowerShell
+$env:M365_COPILOT_TENANT_ID="<tenant-id>"; $env:M365_COPILOT_APP_CLIENT_ID="<client-id>"; lark-acp-m365 login
+```
+
+```bash
+lark-acp proxy --agent m365-copilot
+```
+
+**Environment variables** (set under `agents.m365-copilot.env`):
+
+| Variable                       | Default                    | Description                                                                |
+| ------------------------------ | -------------------------- | -------------------------------------------------------------------------- |
+| `M365_COPILOT_TENANT_ID`       | —                          | Entra directory (tenant) id                                                |
+| `M365_COPILOT_APP_CLIENT_ID`   | —                          | Entra application (client) id                                              |
+| `M365_COPILOT_TIMEZONE`        | system zone                | IANA time zone for the required `locationHint` (e.g. `Asia/Shanghai`)      |
+| `M365_COPILOT_STREAMING`       | `true`                     | `true` → `chatOverStream` (SSE); `false` → the synchronous `chat` endpoint |
+| `M365_COPILOT_SCOPES`          | the 7 Graph scopes         | Comma-separated override for the requested delegated scopes                |
+| `M365_COPILOT_BASE_URL`        | `graph.microsoft.com/beta` | Graph base URL incl. version; override for sovereign clouds                |
+| `M365_COPILOT_STATIC_TOKEN`    | —                          | A pre-acquired bearer token (skips device-code login; mainly for testing)  |
+| `M365_COPILOT_DATA_DIR`        | `~/.lark-acp/m365-copilot` | Token cache + session-id storage directory                                 |
+| `M365_COPILOT_TURN_TIMEOUT_MS` | `300000`                   | Per-turn timeout                                                           |
+
 ## Feishu/Lark developer console setup
 
 Create a **custom app** on the [Feishu Open Platform](https://open.feishu.cn/app) (International: [Lark Developer](https://open.larksuite.com/app)), then configure three things — **permissions**, **events**, and **callbacks** — and publish a version.
@@ -507,9 +702,21 @@ Persist your usual defaults in the file so the command line shrinks to `proxy --
 
 CLI flags temporarily override same-named file entries.
 
-### systemd
+### Run as an OS service (`lark-acp service`)
 
-`lark-acp` is a foreground process — put it under any process manager:
+To run the bridge unattended, `lark-acp service` generates a platform-native service definition for the current OS — a **systemd user unit** on Linux, a **launchd LaunchAgent** on macOS, or a **Task Scheduler** task on Windows:
+
+```bash
+lark-acp service install --agent claude   # write the service definition for a fixed agent
+lark-acp service status                   # show where the definition lives + the query command
+lark-acp service uninstall                # remove the definition
+```
+
+`install` requires `--agent <preset>` (the service runs one fixed agent) and embeds the resolved run config — it reads credentials/settings from your config file at run time, so make sure that file has valid credentials (the service won't see your shell environment). Installation only **writes the file**; it prints the exact commands to activate it (e.g. `systemctl --user enable --now lark-acp.service`) and leaves running them to you, so the tool never mutates your service manager or leaves a half-configured state. `uninstall` removes the file and prints the stop/deregister commands.
+
+### systemd (manual)
+
+Alternatively, `lark-acp` is a foreground process — put it under any process manager by hand:
 
 ```ini
 [Service]
@@ -564,9 +771,84 @@ await bridge.start();
 // ... later: await bridge.stop();
 ```
 
+### Access control
+
+The bundled `lark-acp` CLI enforces access control **by default**: the bridge is **private** — only the owner, admins, and allowlisted users/groups may drive it, and only a permission card's originating operator (or an owner/admin) can approve its tool call. The first user to DM the bot claims ownership unless you pin one with `--owner` / `access.ownerOpenId` / `LARK_ACP_OWNER`. Disable it with `--no-access-control` (or `access.enabled: false`) to fall back to the open behavior where anyone in the app's scope can use the bot.
+
+When embedding the library directly, access control is **opt-in** — construct an `AccessControl` and pass it to `LarkBridge` (omit it to run open):
+
+```ts
+import { LarkBridge, FileSessionStore, AccessControl, FileAccessStore } from "lark-acp-bridge";
+
+const accessControl = new AccessControl({
+  store: new FileAccessStore("./var/lark-acp"), // allowlist state file, atomically written
+  logger,
+  // Optional: pin the owner. When set it always wins and can never be locked out.
+  // When omitted, the first user to DM the bot claims ownership (self-host bootstrap).
+  configuredOwner: "ou_owner_open_id",
+});
+
+const bridge = new LarkBridge({
+  lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
+  agent: { command: "kiro-cli", args: ["acp"] },
+  sessionStore: new FileSessionStore("./var/lark-acp"),
+  accessControl,
+});
+```
+
+With access control enabled, the owner and admins get these extra privileged in-chat commands (in a group, @mention the bot first):
+
+| Command                                          | Effect                                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `/access`                                        | Show the current owner, admins, allowed users, allowed groups, and settings  |
+| `/invite user @…` / `/invite admin @…`           | Add the @mentioned users to the user / admin allowlist                       |
+| `/invite group`                                  | Allow the current group chat                                                 |
+| `/remove user @…` / `/remove admin @…`           | Remove users / demote admins (the owner can never be removed)                |
+| `/remove group`                                  | Disallow the current group chat                                              |
+| `/mention on` / `/mention off`                   | Toggle whether group messages must @mention the bot to be handled            |
+
+Allowlist changes are persisted to a `dataDir` state file (`access.json`, atomically written) and take effect on the next message without a restart. Every access decision and mutation is emitted as an `audit`-tagged log line.
+
+### Identity & prompt context
+
+The bridge tells the agent **who is asking and how Lark skills should authenticate**, so an agent that shells into a Lark tool (e.g. `lark-cli`) has the right chat/user ids and identity:
+
+- **Prompt-context injection** (on by default) — a structured block is prepended to the first message of each turn describing the chat (type, id, name), the sender (name + `open_id`), and the active identity policy.
+- **`lark-cli` identity policy** — `bot-only` (default) runs Lark skills as the app/tenant token; `user-default` signals that personal-resource access should be performed as the requesting user. The policy and a managed `dataDir/lark-cli` config directory are exposed to the agent subprocess via `LARK_ACP_*` environment variables (`LARK_ACP_IDENTITY_POLICY`, `LARK_ACP_CHAT_ID`, `LARK_ACP_CONFIG_DIR`, `LARK_ACP_DOMAIN`).
+
+Set the policy with `--identity`, `identity.policy`, or `LARK_ACP_IDENTITY`.
+
+> **Security & scope.** Because the agent subprocess inherits the bridge's environment, credential injection is an explicit opt-in (`--inject-lark-credentials` / `identity.injectCredentials`) — enabling it exposes `LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET` to every tool the agent runs. Under `bot-only` the assistant reads Lark data as the app token, so keep the bot's tenant scopes minimal (plan §4.2). Genuine per-user `user_access_token` acquisition for `user-default` is a Phase-2 concern; today it *signals* the intended acting identity to the agent rather than exchanging a user token.
+
+When embedding the library, pass an `Identity` to `LarkBridge` (omit it to keep the built-in minimal context block and inject no identity env):
+
+```ts
+import { LarkBridge, FileSessionStore, Identity } from "lark-acp-bridge";
+
+const identity = new Identity({
+  policy: "bot-only",
+  configDir: "./var/lark-acp/lark-cli",
+  injectCredentials: false,
+  injectPromptContext: true,
+  appId: "cli_...",
+  appSecret: "...",
+  domain: "lark",
+  logger,
+});
+
+const bridge = new LarkBridge({
+  lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
+  agent: { command: "kiro-cli", args: ["acp"] },
+  sessionStore: new FileSessionStore("./var/lark-acp"),
+  identity,
+});
+```
+
 Main exports:
 
 - `LarkBridge` — the orchestrator; one instance per process.
+- `AccessControl` / `FileAccessStore` — opt-in intake + card-action access control (private-by-default owner/admin/user/group allowlists).
+- `Identity` — `lark-cli` identity policy + prompt-context injection (`bot-only` / `user-default`).
 - `LarkPresenter` / `LarkCardPresenter` — the pluggable UI surface (swap in your own card rendering).
 - `SessionStore` / `FileSessionStore` — persistent chat → session mapping.
 - `LarkLogger` / `createPinoLogger` — structured logging.

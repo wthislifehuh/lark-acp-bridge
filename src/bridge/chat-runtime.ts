@@ -1,7 +1,12 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { AgentStatus, LarkPresenter } from "../presenter/presenter.js";
-import { LarkAcpClient, type PermissionMode } from "../acp/lark-acp-client.js";
+import {
+  LarkAcpClient,
+  type CardActionClicker,
+  type CardActionResult,
+  type PermissionMode,
+} from "../acp/lark-acp-client.js";
 import {
   spawnAgent,
   spawnAndResumeAgent,
@@ -150,8 +155,12 @@ export class ChatRuntime {
   }
 
   /** Forward a card-action event to the underlying ACP client. */
-  handleCardAction(requestId: string, optionId: string): boolean {
-    return this.state?.client.handleCardAction(requestId, optionId) ?? false;
+  handleCardAction(
+    requestId: string,
+    optionId: string,
+    clicker: CardActionClicker,
+  ): CardActionResult {
+    return this.state?.client.handleCardAction(requestId, optionId, clicker) ?? "orphan";
   }
 
   private async bootstrap(firstMessage: PendingMessage): Promise<ChatRuntimeState> {
@@ -249,7 +258,7 @@ export class ChatRuntime {
           onTyping: () => this.ensureTypingReaction(pending.messageId),
         });
 
-        state.client.setContext(pending.messageId, pending.chatId);
+        state.client.setContext(pending.messageId, pending.chatId, pending.userId);
 
         this.promptInFlight = true;
         try {

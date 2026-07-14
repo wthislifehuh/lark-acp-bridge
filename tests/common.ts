@@ -94,21 +94,30 @@ export interface AdapterHandle {
 }
 
 /**
- * Spawn the built adapter and wrap it in a real ACP client connection.
+ * Spawn the built `q` adapter and wrap it in a real ACP client connection.
  *
  * @throws if `dist/bin/q-acp.js` has not been built.
  */
 export function spawnAdapter(bed: TestBed, extraEnv: Record<string, string> = {}): AdapterHandle {
-  if (!fs.existsSync(ADAPTER_DIST)) {
-    throw new Error(`adapter not built — run \`npm run build\` first (missing ${ADAPTER_DIST})`);
+  return spawnAdapterProcess(ADAPTER_DIST, {
+    Q_ACP_BIN: process.execPath,
+    Q_ACP_DATA_DIR: bed.sessionsDir,
+    ...extraEnv,
+  });
+}
+
+/**
+ * Spawn any built adapter bin with the given env and wrap it in a real ACP
+ * client connection. Shared by all adapter blackbox suites.
+ *
+ * @throws if the dist file has not been built.
+ */
+export function spawnAdapterProcess(distPath: string, env: Record<string, string>): AdapterHandle {
+  if (!fs.existsSync(distPath)) {
+    throw new Error(`adapter not built — run \`npm run build\` first (missing ${distPath})`);
   }
-  const proc = spawn(process.execPath, [ADAPTER_DIST], {
-    env: {
-      ...process.env,
-      Q_ACP_BIN: process.execPath,
-      Q_ACP_DATA_DIR: bed.sessionsDir,
-      ...extraEnv,
-    },
+  const proc = spawn(process.execPath, [distPath], {
+    env: { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

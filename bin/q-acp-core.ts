@@ -9,7 +9,6 @@
 
 import path from "node:path";
 import os from "node:os";
-import type * as acp from "@agentclientprotocol/sdk";
 
 export const DEFAULT_Q_BIN = "q";
 export const DEFAULT_WRAP = "never";
@@ -91,20 +90,9 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_CSI_PATTERN, "");
 }
 
-/** Flatten an ACP prompt into a single plain-text string for `q`. */
-export function flattenPrompt(blocks: readonly acp.ContentBlock[]): string {
-  const parts: string[] = [];
-  for (const block of blocks) {
-    if (block.type === "text") {
-      parts.push(block.text);
-      continue;
-    }
-    // The Lark interpreter only ever emits text blocks (it lowers images /
-    // files / etc. into text placeholders), so this is a defensive fallback.
-    parts.push(`[${block.type} 内容已省略]`);
-  }
-  return parts.join("\n").trim();
-}
+// Moved to ./prompt-text.ts (now shared by all bundled adapters); re-exported
+// here so existing imports keep working.
+export { flattenPrompt } from "./prompt-text.js";
 
 /**
  * Compose the string handed to `q chat`: prior turns as reference context
