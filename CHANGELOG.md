@@ -49,6 +49,20 @@ Phase 1 — harden the self-hostable, org-wide assistant (see
   auto-reconnect, with escalating reconnect logging and connection state in
   `/status`.
 
+### Phase 2 groundwork (non-breaking, single-tenant defaults)
+
+- **Explicit tenant id.** All logs and audit records are keyed by `tenantId`
+  (default `"default"`; set via `tenantId` / `LARK_ACP_TENANT_ID`), so a
+  hosted deployment can run one bridge per tenant without a rewrite. Shown in
+  `/status`.
+- **Transport seam.** Inbound events arrive through a `LarkTransport` built by
+  a `LarkTransportFactory` (default: the WebSocket long connection). A
+  hosted/ISV deployment can inject a webhook receiver via `transportFactory`
+  without touching the bridge.
+- **Pluggable audit sink.** Security events flow through an `AuditLogger`
+  (default `LoggerAuditLogger`, tenant-tagged) instead of ad-hoc log calls, so
+  they can be routed to a separate, retained per-tenant sink.
+
 ### Changed
 
 - Build vs. lint/typecheck configs split: `tsconfig.build.json` emits the
@@ -58,6 +72,9 @@ Phase 1 — harden the self-hostable, org-wide assistant (see
 ### Library API
 
 - New exports: `AccessControl`, `FileAccessStore`, `Identity`,
-  `LarkWsKeepaliveOptions`, and their types. `LarkBridge` accepts optional
-  `accessControl`, `identity`, and `lark.keepalive` — all omittable, so
-  existing programmatic consumers are unaffected.
+  `LarkWsKeepaliveOptions`, `AuditLogger`, `LoggerAuditLogger`,
+  `LarkTransport`, `LarkTransportFactory`, `LarkTransportOptions`,
+  `LarkConnectionStatus`, and their types. `LarkBridge` accepts optional
+  `accessControl`, `identity`, `lark.keepalive`, `tenantId`,
+  `transportFactory`, and `auditLogger` — all omittable, so existing
+  programmatic consumers are unaffected.

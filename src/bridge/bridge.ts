@@ -2,7 +2,13 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
 import { LarkWsConnection, type LarkWsKeepaliveOptions } from "../lark/lark-ws.js";
+import type {
+  LarkTransport,
+  LarkTransportFactory,
+  LarkTransportOptions,
+} from "../lark/transport.js";
 import type { LarkDomainInput } from "../lark/domain.js";
+import { LoggerAuditLogger, type AuditLogger } from "../audit/audit-logger.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
 import {
@@ -41,6 +47,9 @@ const ACCESS_DISABLED_NOTICE: NoticeCardSpec = {
 };
 
 const SENDER_TYPE_USER = "user";
+
+/** Tenant id used in single-tenant mode — everything is still keyed by it. */
+const DEFAULT_TENANT_ID = "default";
 const CHAT_TYPE_GROUP = "group";
 
 const COMMAND_NOTICES: Readonly<Record<"cancel" | "new", NoticeCardSpec>> = {
@@ -161,6 +170,26 @@ export interface LarkBridgeOptions {
    */
   identity?: Identity;
 
+  /**
+   * Explicit tenant id. Defaults to `"default"` in single-tenant mode — all
+   * logs and audit records are keyed by it, so a multi-tenant deployment can
+   * run one bridge per tenant without a rewrite (Phase-2 groundwork).
+   */
+  tenantId?: string;
+
+  /**
+   * Factory for the inbound-event transport. Defaults to the WebSocket long
+   * connection ({@link LarkWsConnection}); inject a custom one (e.g. an
+   * ISV/webhook receiver) to change how events arrive.
+   */
+  transportFactory?: LarkTransportFactory;
+
+  /**
+   * Sink for security-relevant audit events. Defaults to a
+   * {@link LoggerAuditLogger} writing through {@link logger}.
+   */
+  auditLogger?: AuditLogger;
+
   /** Override the default pino-backed logger. */
   logger?: LarkLogger;
   /**
@@ -195,16 +224,32 @@ export class LarkBridge {
   private readonly lark: LarkBridgeLarkOptions;
   private readonly accessControl: AccessControl | null;
   private readonly identity: Identity | null;
+  private readonly tenantId: string;
+  private readonly transportFactory: LarkTransportFactory;
+  private readonly audit: AuditLogger;
 
   private readonly chats = new Map<string, ChatRuntime>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private ws: LarkWsConnection | null = null;
+  private ws: LarkTransport | null = null;
   private started = false;
 
   constructor(opts: LarkBridgeOptions) {
     this.lark = opts.lark;
-    this.logger = opts.logger ?? createPinoLogger();
+    this.tenantId = opts.tenantId ?? DEFAULT_TENANT_ID;
+    // Tenant-tag every log line the bridge and its children emit.
+    this.logger = (opts.logger ?? createPinoLogger()).child({
+      name: "bridge",
+      tenantId: this.tenantId,
+    });
     this.sessionStore = opts.sessionStore;
+    this.audit = opts.auditLogger ?? new LoggerAuditLogger(this.logger, this.tenantId);
+    this.transportFactory =
+      opts.transportFactory ??
+      ((o: LarkTransportOptions) =>
+        new LarkWsConnection({
+          ...o,
+          ...(this.lark.keepalive !== undefined ? { keepalive: this.lark.keepalive } : {}),
+        }));
 
     this.http = new LarkHttpClient({
       appId: opts.lark.appId,
@@ -254,7 +299,7 @@ export class LarkBridge {
       }, IDLE_CLEANUP_INTERVAL_MS);
       this.cleanupTimer.unref();
 
-      this.ws = new LarkWsConnection({
+      this.ws = this.transportFactory({
         appId: this.lark.appId,
         appSecret: this.lark.appSecret,
         ...(this.lark.domain !== undefined ? { domain: this.lark.domain } : {}),
@@ -265,7 +310,6 @@ export class LarkBridge {
         onCardAction: (event) => {
           this.handleCardAction(event);
         },
-        ...(this.lark.keepalive !== undefined ? { keepalive: this.lark.keepalive } : {}),
       });
       await this.ws.start();
     } catch (err) {
@@ -380,17 +424,23 @@ export class LarkBridge {
     });
 
     if (decision.allowed) {
-      this.logger.info(
-        { audit: true, userId, chatId, allowed: true, role: decision.role },
-        decision.ownerClaimed ? "access: ownership claimed" : "access granted",
-      );
+      this.audit.record({
+        action: decision.ownerClaimed ? "access.owner_claimed" : "access.granted",
+        chatId,
+        operatorOpenId: userId,
+        outcome: "allowed",
+        detail: { role: decision.role },
+      });
       return true;
     }
 
-    this.logger.info(
-      { audit: true, userId, chatId, allowed: false, reason: decision.reason },
-      "access denied — ignoring message",
-    );
+    this.audit.record({
+      action: "access.denied",
+      chatId,
+      operatorOpenId: userId,
+      outcome: "denied",
+      detail: { reason: decision.reason },
+    });
     return false;
   }
 
@@ -490,6 +540,7 @@ export class LarkBridge {
 
     const body = [
       `**你的身份**: ${role}`,
+      `**租户**: ${this.tenantId}`,
       `**Agent**: ${this.describeAgentLabel()}`,
       `**会话**: ${sessionState}`,
       `**连接**: ${this.describeConnection()}`,
@@ -559,7 +610,11 @@ export class LarkBridge {
     const ac = await this.requirePrivilegedAccess(userId, messageId);
     if (!ac) return;
     ac.setRequireMentionInGroup(enabled);
-    this.logger.info({ audit: true, userId, enabled }, "access: group mention requirement changed");
+    this.audit.record({
+      action: "access.mention_toggle",
+      operatorOpenId: userId,
+      detail: { enabled },
+    });
     await this.presenter.replyNoticeCard(messageId, {
       title: "已更新",
       body: enabled
@@ -583,7 +638,13 @@ export class LarkBridge {
       kind === "invite"
         ? await this.applyInvite(ac, target, chatId)
         : await this.applyRemove(ac, target, chatId);
-    this.logger.info({ audit: true, userId, kind, target: target.type }, "access: allowlist mutated");
+    this.audit.record({
+      action: kind === "invite" ? "access.grant" : "access.revoke",
+      chatId,
+      operatorOpenId: userId,
+      outcome: kind === "invite" ? "granted" : "revoked",
+      detail: { target: target.type },
+    });
     await this.presenter.replyNoticeCard(messageId, notice);
   }
 
@@ -695,7 +756,11 @@ export class LarkBridge {
       return null;
     }
     if (!ac.isPrivileged(userId)) {
-      this.logger.info({ audit: true, userId }, "access: privileged command denied");
+      this.audit.record({
+        action: "access.command_denied",
+        operatorOpenId: userId,
+        outcome: "denied",
+      });
       await this.presenter.replyNoticeCard(messageId, {
         title: "无权限",
         body: "仅机器人 owner / admin 可执行访问控制命令。",
@@ -845,10 +910,13 @@ export class LarkBridge {
       // §4.1: a non-originating, non-privileged user tried to resolve someone
       // else's permission card. Reject silently and leave the card pending so
       // the rightful operator can still act.
-      this.logger.warn(
-        { audit: true, chatId, requestId, clicker: clicker.openId },
-        "permission card click rejected — not the originating operator",
-      );
+      this.audit.record({
+        action: "tool.authorization_rejected",
+        chatId,
+        operatorOpenId: clicker.openId,
+        outcome: "denied",
+        detail: { requestId, reason: "not_originating_operator" },
+      });
       return;
     }
 
@@ -862,7 +930,13 @@ export class LarkBridge {
       return;
     }
 
-    this.logger.info({ audit: true, chatId, optionId, clicker: clicker.openId }, "card action resolved");
+    this.audit.record({
+      action: "tool.authorized",
+      chatId,
+      operatorOpenId: clicker.openId,
+      outcome: "allowed",
+      detail: { optionId },
+    });
 
     if (messageId && optionName && toolKind && toolTitle) {
       this.presenter

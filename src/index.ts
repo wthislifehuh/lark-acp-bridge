@@ -66,3 +66,12 @@ export {
 export type { LarkDomainName, LarkDomainInput } from "./lark/domain.js";
 
 export type { LarkWsKeepaliveOptions } from "./lark/lark-ws.js";
+export type {
+  LarkTransport,
+  LarkTransportFactory,
+  LarkTransportOptions,
+  LarkConnectionStatus,
+} from "./lark/transport.js";
+
+export { LoggerAuditLogger } from "./audit/audit-logger.js";
+export type { AuditEvent, AuditLogger } from "./audit/audit-logger.js";

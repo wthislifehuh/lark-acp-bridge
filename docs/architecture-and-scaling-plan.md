@@ -142,6 +142,8 @@ An assistant that reads docs/messages/mail ingests **untrusted text** that can c
 ### 4.4 Audit logging
 Admins of an org deployment — and any buyer's security review — will require a record of **who asked what, which tools ran, and which authorizations were granted/denied**. Cheap on top of the existing pino logging: add a structured audit channel keyed by chat + operator `open_id`, retained separately from debug logs.
 
+> **Status — implemented (library-level).** A dedicated `audit/` module defines an `AuditLogger` sink interface (`record(event)`, never throws) and a default `LoggerAuditLogger` that emits through the existing structured logger with an `audit: true` marker and the tenant id. `LarkBridge` accepts an optional `auditLogger` (defaulting to a `LoggerAuditLogger` bound to the bridge's `logger` + `tenantId`), so a hosted deployment can route security-relevant events to a separate, retained per-tenant sink without touching the bridge — while single-tenant self-hosts keep today's audit-tagged log lines. `AuditLogger` / `LoggerAuditLogger` are exported from the package top-level index, and every ad-hoc `audit`-tagged log call in the bridge has been migrated onto the sink.
+
 ---
 
 ## 5. "Best of both" — recover the cold-start cost cheaply; build a direct adapter only if measured
@@ -212,10 +214,10 @@ The true "buy it on the Lark marketplace, click install, done" product. Assistan
 - **Agent execution at scale**: move off "one local CLI login per box." Options: (a) hosted-model path via the **Claude Agent SDK / Anthropic API** (`claude-agent` preset direction) — no local subprocess per user; (b) pooled/sandboxed workers (containers/microVMs) if a local runtime is still needed. Assistant tools = Lark API calls, so (a) is likely sufficient and cheapest to isolate.
 - **Product plumbing**: install/onboarding flow, admin console, per-seat/tenant billing & licensing, data residency (`feishu` vs `lark` domains, China 21Vianet constraints), security review, observability/metrics (extend the CLI project's opt-in telemetry hook into first-class SaaS monitoring; build on the §4.4 audit channel).
 - **Foundations to lay now (cheap, done during Phase 1)** so Phase 2 isn't a rewrite:
-  - Keep all tenant-specific state keyed by an explicit tenant id even in single-tenant mode (don't bake in "one app").
-  - Abstract the Lark transport behind an interface so a webhook/ISV transport can slot in beside the WS one.
+  - Keep all tenant-specific state keyed by an explicit tenant id even in single-tenant mode (don't bake in "one app"). *Status — started (library-level):* `LarkBridge` accepts an optional `tenantId` (default `"default"`) and tenant-tags every log line it and its children emit, plus every audit record (§4.4). State stores (session, access) are not yet tenant-scoped, so this is groundwork, not multi-tenant isolation.
+  - Abstract the Lark transport behind an interface so a webhook/ISV transport can slot in beside the WS one. *Status — started (library-level):* `src/lark/transport.ts` defines a transport-agnostic `LarkTransport` (`start` / `stop` / `getConnectionStatus`) plus `LarkTransportOptions` (credentials, region, logger, and the `onMessage` / `onCardAction` callbacks), a `LarkTransportFactory`, and a coarse `LarkConnectionStatus` snapshot; `LarkWsConnection` now `implements LarkTransport`. `LarkBridge` now accepts an injected `transportFactory` (defaulting to a factory that builds a `LarkWsConnection`, forwarding the `keepalive` tuning), so a future webhook/ISV receiver can slot in beside the WS one without touching the bridge. Exported from both the package top-level index and the `lark` submodule's own `index.ts`.
   - Abstract agent execution behind the ACP boundary (already true) so a hosted-model executor can replace subprocess spawning.
-  - Structured, tenant-tagged, audit-grade logging/metrics from day one.
+  - Structured, tenant-tagged, audit-grade logging/metrics from day one. *Status — started (library-level):* the bridge logger and the default `LoggerAuditLogger` are both tenant-tagged (§4.4); first-class metrics remain future work.
 
 ---
 

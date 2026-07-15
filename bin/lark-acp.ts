@@ -69,6 +69,8 @@ const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
 const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
 const ENV_OWNER = "LARK_ACP_OWNER";
 const ENV_IDENTITY = "LARK_ACP_IDENTITY";
+const ENV_TENANT_ID = "LARK_ACP_TENANT_ID";
+const DEFAULT_TENANT_ID = "default";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
@@ -159,6 +161,8 @@ interface FileIdentity {
 interface FileConfig {
   readonly credentials: FileCredentials;
   readonly dataDir?: string;
+  /** Explicit tenant id; defaults to "default" in single-tenant mode. */
+  readonly tenantId?: string;
   readonly runtime: FileRuntime;
   readonly access: FileAccess;
   readonly identity: FileIdentity;
@@ -335,11 +339,13 @@ function readConfigFile(filePath: string): FileConfig {
   };
 
   const dataDir = asStringOpt("dataDir", root.dataDir);
+  const tenantId = asStringOpt("tenantId", root.tenantId);
   const agents = parseAgentsBlock(root.agents);
 
   return {
     credentials,
     ...(dataDir !== undefined ? { dataDir } : {}),
+    ...(tenantId !== undefined ? { tenantId } : {}),
     runtime,
     access,
     identity,
@@ -760,6 +766,7 @@ interface EffectiveConfig {
   readonly identityPromptContext: boolean;
   readonly pingTimeoutSec: number;
   readonly handshakeTimeoutMs: number;
+  readonly tenantId: string;
 }
 
 /**
@@ -869,6 +876,13 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   const pingTimeoutSec = file.runtime.pingTimeoutSeconds ?? DEFAULT_PING_TIMEOUT_SECONDS;
   const handshakeTimeoutMs = file.runtime.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 
+  // ----- tenant id: env > file > default -----
+  const envTenant = process.env[ENV_TENANT_ID];
+  const tenantId =
+    (envTenant !== undefined && envTenant.length > 0 ? envTenant : undefined) ??
+    file.tenantId ??
+    DEFAULT_TENANT_ID;
+
   return {
     appId,
     appSecret,
@@ -890,6 +904,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     identityPromptContext,
     pingTimeoutSec,
     handshakeTimeoutMs,
+    tenantId,
   };
 }
 
@@ -1111,6 +1126,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     `config:      ${configPath}${fs.existsSync(configPath) ? "" : " (not found, using defaults)"}`,
   );
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
+  cliLogger.info(`tenant:      ${cfg.tenantId}`);
   cliLogger.info(`domain:      ${cfg.domain} (${cfg.domainSource})`);
   cliLogger.info(`agent:       ${invocation.displayLabel}${launch.prepared ? " [prepared]" : ""}`);
   if (!launch.prepared && parseNpxInvocation(launch.invocation)) {
@@ -1176,6 +1192,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       maxConcurrentChats: cfg.maxChats,
     },
     sessionStore,
+    tenantId: cfg.tenantId,
     ...(accessControl ? { accessControl } : {}),
     identity,
     logger: rootLogger,

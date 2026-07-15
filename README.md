@@ -295,6 +295,7 @@ When a shim isn't prepared, `proxy` falls back to the original `npx` invocation,
 | `LARK_ACP_PERMISSION_MODE` | Overrides `runtime.permissionMode` |
 | `LARK_ACP_OWNER`           | Overrides `access.ownerOpenId`     |
 | `LARK_ACP_IDENTITY`        | Overrides `identity.policy`        |
+| `LARK_ACP_TENANT_ID`       | Overrides `tenantId`               |
 
 ## Connecting specific agents
 
@@ -807,7 +808,16 @@ With access control enabled, the owner and admins get these extra privileged in-
 | `/remove group`                                  | Disallow the current group chat                                              |
 | `/mention on` / `/mention off`                   | Toggle whether group messages must @mention the bot to be handled            |
 
-Allowlist changes are persisted to a `dataDir` state file (`access.json`, atomically written) and take effect on the next message without a restart. Every access decision and mutation is emitted as an `audit`-tagged log line.
+Allowlist changes are persisted to a `dataDir` state file (`access.json`, atomically written) and take effect on the next message without a restart. Every access decision and mutation is emitted through the audit logger (see below).
+
+### Multi-tenant groundwork
+
+The bridge lays cheap, non-breaking seams for a future hosted / multi-tenant deployment (see `docs/architecture-and-scaling-plan.md` §6), all with single-tenant defaults so existing behavior is unchanged:
+
+- **Explicit tenant id** — every log line and audit record is keyed by `tenantId` (default `"default"`; set via `tenantId` / `LARK_ACP_TENANT_ID`), so a hosted deployment can run one bridge per tenant without a rewrite.
+- **Transport seam** — inbound events arrive through a `LarkTransport` built by a `LarkTransportFactory`. The default is the WebSocket long connection; a hosted/ISV deployment can inject a webhook receiver instead by passing `transportFactory`.
+- **Audit sink** — security events (access decisions, allowlist mutations, tool authorizations) flow through a pluggable `AuditLogger`. The default `LoggerAuditLogger` writes tenant-tagged `audit: true` records through the structured logger; swap it for a per-tenant retained sink.
+- **Agent execution** already sits behind the ACP boundary, so a hosted-model executor can replace subprocess spawning without touching the bridge.
 
 ### Identity & prompt context
 
@@ -844,11 +854,31 @@ const bridge = new LarkBridge({
 });
 ```
 
+### Tenancy & audit logging
+
+`LarkBridge` accepts an optional `tenantId` (defaults to `"default"` in single-tenant mode). Every log line the bridge and its children emit — and every audit record — is tagged with it, so a multi-tenant deployment can run one bridge per tenant without a rewrite (Phase-2 groundwork).
+
+Two further injection points support that direction and default to today's behavior when omitted:
+
+- `auditLogger` — a sink for security-relevant events (access decisions, allowlist mutations, tool authorizations). Defaults to a logger-backed sink that writes `audit`-tagged, tenant-tagged log lines; supply your own to route them to a separate retained store.
+- `transportFactory` — builds the inbound-event transport. Defaults to the WebSocket long connection; inject your own (e.g. an ISV/webhook receiver) to change how events arrive.
+
+```ts
+const bridge = new LarkBridge({
+  lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
+  agent: { command: "kiro-cli", args: ["acp"] },
+  sessionStore: new FileSessionStore("./var/lark-acp"),
+  tenantId: "acme-corp",
+});
+```
+
 Main exports:
 
 - `LarkBridge` — the orchestrator; one instance per process.
 - `AccessControl` / `FileAccessStore` — opt-in intake + card-action access control (private-by-default owner/admin/user/group allowlists).
 - `Identity` — `lark-cli` identity policy + prompt-context injection (`bot-only` / `user-default`).
+- `AuditLogger` / `LoggerAuditLogger` — pluggable, tenant-tagged audit sink for security events.
+- `LarkTransport` / `LarkTransportFactory` — the inbound-event transport seam (WebSocket by default; inject your own).
 - `LarkPresenter` / `LarkCardPresenter` — the pluggable UI surface (swap in your own card rendering).
 - `SessionStore` / `FileSessionStore` — persistent chat → session mapping.
 - `LarkLogger` / `createPinoLogger` — structured logging.

@@ -1,6 +1,7 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { adaptToSdkLogger, type LarkLogger } from "../logger/logger.js";
 import { resolveLarkDomain, type LarkDomainInput } from "./domain.js";
+import type { LarkTransport } from "./transport.js";
 
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
 
@@ -51,7 +52,7 @@ export interface LarkWsOptions {
  * `im.message.receive_v1` and `card.action.trigger`; ignores other events
  * to avoid noisy SDK warnings.
  */
-export class LarkWsConnection {
+export class LarkWsConnection implements LarkTransport {
   private readonly wsClient: Lark.WSClient;
   private readonly logger: LarkLogger;
   private readonly onMessage: LarkWsOptions["onMessage"];

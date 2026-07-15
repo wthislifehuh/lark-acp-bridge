@@ -656,6 +656,24 @@ const bridge = new LarkBridge({
 
 > 内置的 `lark-acp` CLI 目前尚未构造 `AccessControl`，因此运行 `lark-acp proxy` 仍保持开放行为。访问控制目前是面向二次开发者的库级功能。
 
+### 租户标记与审计日志
+
+`LarkBridge` 支持可选的 `tenantId`（单租户模式下默认为 `"default"`）。bridge 及其子组件输出的每一行日志、以及每一条审计记录都会带上该租户 id，因此多租户部署可以每个租户运行一个 bridge 实例而无需改造（Phase-2 前置准备）。
+
+另有两个注入点服务于该方向，省略时保持当前行为：
+
+- `auditLogger` — 安全相关事件（访问决策、白名单变更、工具授权）的输出通道。默认写出带 `audit` 标记且带租户标记的日志；可自行替换以将其路由到独立的留存存储。
+- `transportFactory` — 构建入站事件传输层。默认使用 WebSocket 长连接；可注入自定义实现（如 ISV/webhook 接收端）以改变事件到达方式。
+
+```ts
+const bridge = new LarkBridge({
+  lark: { appId: "cli_...", appSecret: "...", domain: "lark" },
+  agent: { command: "kiro-cli", args: ["acp"] },
+  sessionStore: new FileSessionStore("./var/lark-acp"),
+  tenantId: "acme-corp",
+});
+```
+
 主要导出：`LarkBridge`（编排器）、`AccessControl` / `FileAccessStore`（可选启用的消息接入与卡片操作访问控制，默认私有的 owner/管理员/用户/群聊白名单）、`LarkCardPresenter` / `LarkPresenter`（可替换的 UI 层）、`FileSessionStore` / `SessionStore`（会话持久化）、`createPinoLogger` / `LarkLogger`（结构化日志）、`LarkHttpClient` 与 domain 工具函数。
 
 ## 致谢与类似项目
