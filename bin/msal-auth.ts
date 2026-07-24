@@ -45,7 +45,7 @@ export interface MsalAuthOptions {
 export class AuthRequiredError extends Error {
   constructor(loginCommand: string, options?: { cause?: unknown }) {
     super(
-      `Authentication required: 请先在终端运行 \`${loginCommand}\` 完成 Microsoft 登录后重试`,
+      `Authentication required: run \`${loginCommand}\` in a terminal to complete the Microsoft sign-in, then retry`,
       options,
     );
     this.name = "AuthRequiredError";

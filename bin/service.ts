@@ -191,7 +191,10 @@ function buildTaskScheduler(spec: ServiceSpec): ServiceDefinition {
     label: WINDOWS_LABEL,
     filePath,
     content,
-    activate: [`schtasks /Create /TN ${WINDOWS_LABEL} /XML "${filePath}" /F`, `schtasks /Run /TN ${WINDOWS_LABEL}`],
+    activate: [
+      `schtasks /Create /TN ${WINDOWS_LABEL} /XML "${filePath}" /F`,
+      `schtasks /Run /TN ${WINDOWS_LABEL}`,
+    ],
     deactivate: [`schtasks /End /TN ${WINDOWS_LABEL}`, `schtasks /Delete /TN ${WINDOWS_LABEL} /F`],
     status: `schtasks /Query /TN ${WINDOWS_LABEL} /V /FO LIST`,
   };

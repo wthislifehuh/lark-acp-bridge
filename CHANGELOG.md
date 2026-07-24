@@ -10,6 +10,28 @@ Phase 1 — harden the self-hostable, org-wide assistant (see
 
 ### Added
 
+- **Lark MCP tool server — the agent's reverse channel into Lark.** An
+  in-process, loopback-only MCP server (`src/lark-tools/`) gives ACP agents a
+  curated set of tools to act *on* Lark, not just answer into it:
+  `lark_ask_choice` (send an interactive card and block until the bound user
+  picks an option — reuses the permission-card operator-binding rule so only
+  the asking user, or a privileged user, can answer) and
+  `lark_download_message_file` (fetch a user-attached image/file by
+  `message_id` + `file_key`). Design: `docs/lark-mcp-tool-server.md`.
+  - Injected per chat via ACP `newSession({ mcpServers: [...] })` over a
+    distinct `http://127.0.0.1:<port>/mcp/<token>` endpoint — a tool call
+    self-routes to its chat with no correlation logic, and a leaked token
+    only reaches one chat's tools.
+  - **Zero cost when disabled or unsupported**: off by default
+    (`--lark-tools` / `tools.enabled` / `LARK_ACP_TOOLS_ENABLED`), and only
+    injected into agents that advertise `mcpCapabilities.http` — an agent
+    without it runs exactly as before.
+  - Credentials never leave the bridge — tool calls run through the existing
+    `LarkHttpClient`; the agent subprocess doesn't receive the app secret.
+  - Small, curated catalog (2 tools) by design, to keep the per-session tool
+    schema light; see the design doc's phased catalog-growth plan.
+  - CLI wiring: `--lark-tools` / `tools.enabled` / `tools.askTimeoutMs` in
+    `config.json`, or `LARK_ACP_TOOLS_ENABLED` — off by default.
 - **Access control (private-by-default).** Two enforcement points:
   - _Message intake_ — owner / admin / user / group allowlists gate every
     inbound message; non-allowed senders are silently ignored. The first user
@@ -74,7 +96,10 @@ Phase 1 — harden the self-hostable, org-wide assistant (see
 - New exports: `AccessControl`, `FileAccessStore`, `Identity`,
   `LarkWsKeepaliveOptions`, `AuditLogger`, `LoggerAuditLogger`,
   `LarkTransport`, `LarkTransportFactory`, `LarkTransportOptions`,
-  `LarkConnectionStatus`, and their types. `LarkBridge` accepts optional
+  `LarkConnectionStatus`, `LarkToolServer`, `ToolContext`, `AskTimeoutError`,
+  `registerLarkTools`, `LARK_TOOL_NAMES`, `LarkToolsOptions`,
+  `LarkToolServerOptions`, `ToolContextOptions`, `AskChoiceResult`,
+  `DownloadedResource`, and their types. `LarkBridge` accepts optional
   `accessControl`, `identity`, `lark.keepalive`, `tenantId`,
-  `transportFactory`, and `auditLogger` — all omittable, so existing
+  `transportFactory`, `auditLogger`, and `tools` — all omittable, so existing
   programmatic consumers are unaffected.

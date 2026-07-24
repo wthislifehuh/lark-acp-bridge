@@ -18,9 +18,9 @@ export const DEFAULT_POWER_PLATFORM_SCOPE = "https://api.powerplatform.com/.defa
 export const AUTH_MODES = ["device-code", "client-secret", "static-token"] as const;
 export type AuthMode = (typeof AUTH_MODES)[number];
 
-const SUGGESTED_ACTIONS_LABEL = "**建议选项**";
+const SUGGESTED_ACTIONS_LABEL = "**Suggested actions**";
 const ATTACHMENT_NOTE = (count: number): string =>
-  `_(收到 ${String(count)} 个卡片附件，Lark 卡片暂不渲染其内容)_`;
+  `_(received ${String(count)} card attachment(s); Lark cards do not render their content yet)_`;
 
 /** Blank line between separate messages of one turn. */
 const MESSAGE_SEPARATOR = "\n\n";
@@ -73,7 +73,7 @@ export function resolveAuthMode(
   if (explicit !== null) {
     if (!isAuthMode(explicit)) {
       throw new Error(
-        `COPILOT_STUDIO_AUTH_MODE 必须是 ${AUTH_MODES.join(" / ")} 之一，收到 "${explicit}"`,
+        `COPILOT_STUDIO_AUTH_MODE must be one of ${AUTH_MODES.join(" / ")}, got "${explicit}"`,
       );
     }
     return explicit;
@@ -131,18 +131,18 @@ export function validateConfig(config: CopilotStudioAdapterConfig): string[] {
   const hasEnvPair = config.environmentId !== null && config.schemaName !== null;
   if (!hasDirect && !hasEnvPair) {
     problems.push(
-      "需要 COPILOT_STUDIO_DIRECT_CONNECT_URL，或同时提供 COPILOT_STUDIO_ENVIRONMENT_ID 与 COPILOT_STUDIO_SCHEMA_NAME（Copilot Studio → 设置 → 高级 → 元数据）",
+      "COPILOT_STUDIO_DIRECT_CONNECT_URL is required, or provide both COPILOT_STUDIO_ENVIRONMENT_ID and COPILOT_STUDIO_SCHEMA_NAME (Copilot Studio → Settings → Advanced → Metadata)",
     );
   }
   if (config.authMode === "device-code" || config.authMode === "client-secret") {
-    if (config.tenantId === null) problems.push("缺少 COPILOT_STUDIO_TENANT_ID");
-    if (config.appClientId === null) problems.push("缺少 COPILOT_STUDIO_APP_CLIENT_ID");
+    if (config.tenantId === null) problems.push("missing COPILOT_STUDIO_TENANT_ID");
+    if (config.appClientId === null) problems.push("missing COPILOT_STUDIO_APP_CLIENT_ID");
   }
   if (config.authMode === "client-secret" && config.clientSecret === null) {
-    problems.push("authMode=client-secret 需要 COPILOT_STUDIO_CLIENT_SECRET");
+    problems.push("authMode=client-secret requires COPILOT_STUDIO_CLIENT_SECRET");
   }
   if (config.authMode === "static-token" && config.staticToken === null) {
-    problems.push("authMode=static-token 需要 COPILOT_STUDIO_STATIC_TOKEN");
+    problems.push("authMode=static-token requires COPILOT_STUDIO_STATIC_TOKEN");
   }
   return problems;
 }
@@ -300,20 +300,20 @@ export function describeUpstreamFailure(
   failure: UpstreamHttpFailure,
   loginCommand: string,
 ): string {
-  const detail = failure.bodyTail ? `：${failure.bodyTail}` : "";
+  const detail = failure.bodyTail ? `: ${failure.bodyTail}` : "";
   switch (failure.status) {
     case HTTP_UNAUTHORIZED:
     case HTTP_FORBIDDEN:
       return (
-        `Authentication required: Copilot Studio 返回 ${String(failure.status)}` +
-        `（token 无效/过期，或应用缺少 CopilotStudio.Copilots.Invoke 权限）。` +
-        `请重新运行 \`${loginCommand}\` 并确认 Entra 应用权限${detail}`
+        `Authentication required: Copilot Studio returned ${String(failure.status)} ` +
+        `(token invalid or expired, or the app lacks the CopilotStudio.Copilots.Invoke permission). ` +
+        `Re-run \`${loginCommand}\` and check the Entra app permissions${detail}`
       );
     case HTTP_NOT_FOUND:
-      return `Copilot Studio 返回 404：请检查 environmentId / schemaName / directConnectUrl 是否正确、Agent 是否已发布${detail}`;
+      return `Copilot Studio returned 404: check that environmentId / schemaName / directConnectUrl are correct and that the agent is published${detail}`;
     case HTTP_TOO_MANY_REQUESTS:
-      return `Copilot Studio 返回 429（限流），请稍后重试${detail}`;
+      return `Copilot Studio returned 429 (rate limited) — please retry later${detail}`;
     default:
-      return `Copilot Studio 请求失败（HTTP ${String(failure.status)}）${detail}`;
+      return `Copilot Studio request failed (HTTP ${String(failure.status)})${detail}`;
   }
 }

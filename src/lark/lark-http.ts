@@ -218,9 +218,46 @@ export class LarkHttpClient {
     messageId: string,
     imageKey: string,
   ): Promise<{ bytes: Buffer; mimeType: string }> {
+    const { bytes, headerMime } = await this.fetchMessageResource(messageId, imageKey, "image");
+    // An absent OR empty header both fall back to magic-byte sniffing.
+    const mimeType = headerMime ?? sniffImageMime(bytes);
+    return { bytes, mimeType };
+  }
+
+  /**
+   * Download any user-sent message attachment (`image` / `file` / `audio` /
+   * `media`) and return its raw bytes plus MIME type.
+   *
+   * Generalises {@link downloadMessageImage} for the MCP `download_message_file`
+   * tool. For non-image types the MIME falls back to
+   * `application/octet-stream` when the server sends no usable content-type.
+   *
+   * @throws when the SDK call rejects or the stream cannot be drained.
+   */
+  async downloadMessageResource(
+    messageId: string,
+    fileKey: string,
+    type: "image" | "file",
+  ): Promise<{ bytes: Buffer; mimeType: string }> {
+    const { bytes, headerMime } = await this.fetchMessageResource(messageId, fileKey, type);
+    const mimeType =
+      headerMime ?? (type === "image" ? sniffImageMime(bytes) : "application/octet-stream");
+    return { bytes, mimeType };
+  }
+
+  /**
+   * Shared drain for `im.messageResource.get`. Returns the concatenated
+   * bytes and the parsed `content-type` (charset/boundary stripped), or
+   * `null` when the header is absent/empty so callers can pick a fallback.
+   */
+  private async fetchMessageResource(
+    messageId: string,
+    fileKey: string,
+    type: "image" | "file",
+  ): Promise<{ bytes: Buffer; headerMime: string | null }> {
     const res = await this.client.im.messageResource.get({
-      path: { message_id: messageId, file_key: imageKey },
-      params: { type: "image" },
+      path: { message_id: messageId, file_key: fileKey },
+      params: { type },
     });
 
     const chunks: Buffer[] = [];
@@ -232,13 +269,10 @@ export class LarkHttpClient {
     const headers = res.headers as Record<string, string | string[] | undefined> | undefined;
     const raw = headers?.["content-type"];
     const headerValue = Array.isArray(raw) ? raw[0] : raw;
-    // strip charset / boundary suffix, e.g. "image/png; charset=utf-8";
-    // an absent OR empty header both fall back to magic-byte sniffing
     const parsedMime = headerValue?.split(";")[0]?.trim();
-    const mimeType =
-      parsedMime !== undefined && parsedMime !== "" ? parsedMime : sniffImageMime(bytes);
+    const headerMime = parsedMime !== undefined && parsedMime !== "" ? parsedMime : null;
 
-    return { bytes, mimeType };
+    return { bytes, headerMime };
   }
 }
 

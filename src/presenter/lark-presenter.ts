@@ -23,15 +23,15 @@ const HEADER_TEMPLATE_RESOLVED = "green";
 const HEADER_TEMPLATE_EXPIRED = "grey";
 
 const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> = {
-  thinking: { content: "💭 思考中...", template: "wathet" },
-  calling_tool: { content: "🛠 调用工具...", template: "blue" },
-  responding: { content: "✍️ 回复中...", template: "blue" },
-  complete: { content: "✅ 已完成", template: "green" },
-  cancelled: { content: "⛔ 已取消", template: "grey" },
-  failed: { content: "⚠️ 出错", template: "red" },
+  thinking: { content: "💭 Thinking...", template: "wathet" },
+  calling_tool: { content: "🛠 Calling tool...", template: "blue" },
+  responding: { content: "✍️ Responding...", template: "blue" },
+  complete: { content: "✅ Done", template: "green" },
+  cancelled: { content: "⛔ Cancelled", template: "grey" },
+  failed: { content: "⚠️ Failed", template: "red" },
 };
 
-const CANCEL_BUTTON_TEXT = "中断当前任务";
+const CANCEL_BUTTON_TEXT = "Stop current task";
 
 // Card JSON 2.0 — required for the `collapsible_panel` element used by
 // thought entries. v1.0 cards silently degrade unknown components to
@@ -101,14 +101,14 @@ function buildPermissionCard(
     );
   }
 
-  return buildV2Card("Agent 需要确认", HEADER_TEMPLATE_PERMISSION, elements);
+  return buildV2Card("Agent needs your approval", HEADER_TEMPLATE_PERMISSION, elements);
 }
 
 function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: string): object {
-  return buildV2Card("已确认", HEADER_TEMPLATE_RESOLVED, [
+  return buildV2Card("Approved", HEADER_TEMPLATE_RESOLVED, [
     {
       tag: "markdown",
-      content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
+      content: `**${toolKind}**: ${toolTitle}\n\nSelected: **${selectedName}**`,
     },
   ]);
 }
@@ -118,7 +118,7 @@ function buildNoticeCard(notice: NoticeCardSpec): object {
 }
 
 function buildExpiredCard(reason: string): object {
-  return buildV2Card("已失效", HEADER_TEMPLATE_EXPIRED, [{ tag: "markdown", content: reason }]);
+  return buildV2Card("Expired", HEADER_TEMPLATE_EXPIRED, [{ tag: "markdown", content: reason }]);
 }
 
 function assertNever(x: never): never {
@@ -151,7 +151,7 @@ function buildThoughtPanel(text: string): object {
     tag: "collapsible_panel",
     expanded: false,
     header: {
-      title: { tag: "plain_text", content: "💭 思考" },
+      title: { tag: "plain_text", content: "💭 Thinking" },
       vertical_align: "center",
       icon: {
         tag: "standard_icon",
@@ -178,7 +178,7 @@ function buildUnifiedCard(state: UnifiedCardState): object {
   const elements: object[] = [];
 
   if (state.entries.length === 0) {
-    elements.push({ tag: "markdown", content: "_准备中..._" });
+    elements.push({ tag: "markdown", content: "_Preparing..._" });
   } else {
     state.entries.forEach((entry, i) => {
       // Don't draw a divider directly above a collapsible panel — the

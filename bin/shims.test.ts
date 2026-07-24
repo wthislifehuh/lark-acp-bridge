@@ -28,15 +28,22 @@ describe("stripVersion", () => {
 
 describe("parseNpxInvocation", () => {
   it("parses an `npx -y <pkg>` launch", () => {
-    expect(parseNpxInvocation({ command: "npx", args: ["-y", "@zed-industries/codex-acp"] })).toEqual(
-      { spec: "@zed-industries/codex-acp", pkg: "@zed-industries/codex-acp", rest: [] },
-    );
+    expect(
+      parseNpxInvocation({ command: "npx", args: ["-y", "@zed-industries/codex-acp"] }),
+    ).toEqual({ spec: "@zed-industries/codex-acp", pkg: "@zed-industries/codex-acp", rest: [] });
   });
 
   it("keeps trailing args and honours --yes / versions", () => {
     expect(
-      parseNpxInvocation({ command: "npx", args: ["--yes", "@google/gemini-cli@1.0.0", "--experimental-acp"] }),
-    ).toEqual({ spec: "@google/gemini-cli@1.0.0", pkg: "@google/gemini-cli", rest: ["--experimental-acp"] });
+      parseNpxInvocation({
+        command: "npx",
+        args: ["--yes", "@google/gemini-cli@1.0.0", "--experimental-acp"],
+      }),
+    ).toEqual({
+      spec: "@google/gemini-cli@1.0.0",
+      pkg: "@google/gemini-cli",
+      rest: ["--experimental-acp"],
+    });
   });
 
   it("tolerates a .cmd/.exe npx basename with a full path", () => {
@@ -85,7 +92,9 @@ describe("prepared-bin resolution", () => {
 
   it("resolves an object bin by short name, else the first entry", () => {
     installFake("gizmo", { gizmo: "cli.js", other: "other.js" });
-    expect(resolvePreparedBin("gizmo", dir)).toBe(path.join(dir, "node_modules", "gizmo", "cli.js"));
+    expect(resolvePreparedBin("gizmo", dir)).toBe(
+      path.join(dir, "node_modules", "gizmo", "cli.js"),
+    );
   });
 
   it("returns null when not installed or bin missing", () => {

@@ -26,10 +26,10 @@ const MAX_DIFF_LINES = 50;
 const MAX_THOUGHT_CHARS = 4_000;
 const MAX_TOOL_DETAIL_CHARS = 500;
 
-const TRUNCATION_NOTICE = "…（内容过长，已截断）";
+const TRUNCATION_NOTICE = "… (content too long, truncated)";
 
-const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
-const PERMISSION_SHUTDOWN_REASON = "会话已结束，本次确认已失效";
+const PERMISSION_TIMEOUT_REASON = "No response within the time limit — automatically cancelled";
+const PERMISSION_SHUTDOWN_REASON = "The session has ended — this approval request has expired";
 
 /**
  * Thrown when the agent asks to read / write a path outside its working
@@ -113,7 +113,7 @@ export interface LarkAcpClientOptions {
   /** Include `tool_call` / `tool_call_update` events in the unified card. */
   showTools: boolean;
   /**
-   * Render the "中断当前任务" button at the bottom of the running card.
+   * Render the "Stop current task" button at the bottom of the running card.
    * When `false`, the only way to cancel is via a chat command.
    */
   showCancelButton: boolean;
@@ -264,7 +264,11 @@ export class LarkAcpClient implements acp.Client {
    * other clicker is rejected and the request stays pending — closing the
    * §4.1 hole where any group member could approve another user's tool call.
    */
-  handleCardAction(requestId: string, optionId: string, clicker: CardActionClicker): CardActionResult {
+  handleCardAction(
+    requestId: string,
+    optionId: string,
+    clicker: CardActionClicker,
+  ): CardActionResult {
     const pp = this.pendingPermissions.get(requestId);
     if (!pp) return "orphan";
 
@@ -575,7 +579,7 @@ function truncateChars(text: string, maxChars: number): string {
 function truncateLines(lines: readonly string[], maxLines: number): string {
   if (lines.length <= maxLines) return lines.join("\n");
   const omitted = lines.length - maxLines;
-  return [...lines.slice(0, maxLines), `... (省略 ${omitted} 行)`].join("\n");
+  return [...lines.slice(0, maxLines), `... (${omitted} more lines omitted)`].join("\n");
 }
 
 /** Apply ACP's optional 1-based `line` offset and `limit` (max lines) to file content. */

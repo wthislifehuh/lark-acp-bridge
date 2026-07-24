@@ -170,8 +170,8 @@ function renderInline(token: Token): string {
       // Agents emit URL-based images; post can only render uploaded
       // image_keys. Render as a link so the user can still reach it.
       const img = token as Tokens.Image;
-      const label = img.text || "图片";
-      return `[图片 ${label}](${img.href})`;
+      const label = img.text || "image";
+      return `[Image ${label}](${img.href})`;
     }
     case "br":
       return "\n";

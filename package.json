@@ -44,6 +44,7 @@
     "@larksuiteoapi/node-sdk": "^1.65.0",
     "@microsoft/agents-activity": "^1.6.1",
     "@microsoft/agents-copilotstudio-client": "^1.6.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "marked": "^18.0.4",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

@@ -38,6 +38,8 @@ export interface ChatRuntimeOptions {
   presenter: LarkPresenter;
   sessionStore: SessionStore;
   logger: LarkLogger;
+  /** MCP servers to expose to the agent session (capability-gated at spawn). */
+  mcpServers?: acp.McpServer[];
 }
 
 interface ChatRuntimeState {
@@ -187,6 +189,7 @@ export class ChatRuntime {
       env: this.opts.agentEnv,
       client,
       logger: this.logger,
+      ...(this.opts.mcpServers !== undefined ? { mcpServers: this.opts.mcpServers } : {}),
     };
 
     const latest = await this.opts.sessionStore.getLatest(this.opts.chatId);
@@ -236,9 +239,9 @@ export class ChatRuntime {
     if (!messageId || exitedNormally) return;
 
     const stderrSuffix =
-      tail.length > 0 ? `\n\nstderr (最后 ${tail.length} 行):\n${tail.join("\n")}` : "";
+      tail.length > 0 ? `\n\nstderr (last ${tail.length} lines):\n${tail.join("\n")}` : "";
     // `code` is non-null here — exitedNormally covered the null case above.
-    const summary = `⚠️ Agent 进程意外退出 (code=${code}, signal=${signal ?? "null"})${stderrSuffix}`;
+    const summary = `⚠️ Agent process exited unexpectedly (code=${code}, signal=${signal ?? "null"})${stderrSuffix}`;
     this.opts.presenter.replyText(messageId, summary).catch((err: unknown) => {
       this.logger.warn({ err }, "exit notice reply failed");
     });
@@ -332,7 +335,7 @@ export class ChatRuntime {
     const stderrTail = procDead ? state.agent.getRecentStderr() : [];
     const stderrSuffix =
       stderrTail.length > 0
-        ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}`
+        ? `\n\nstderr (last ${stderrTail.length} lines):\n${stderrTail.join("\n")}`
         : "";
 
     // Always finalize the unified card as failed so the in-progress state

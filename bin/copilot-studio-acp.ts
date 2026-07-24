@@ -79,8 +79,8 @@ const AGENT_VERSION = "0.1.0";
 const LOGIN_COMMAND = "lark-acp-copilot-studio login";
 const MSAL_CACHE_FILE = "msal-cache.json";
 
-const EMPTY_OUTPUT_NOTE = "_(Copilot Studio 未返回任何内容)_";
-const EMPTY_PROMPT_NOTE = "_(空消息，未调用 Copilot Studio)_";
+const EMPTY_OUTPUT_NOTE = "_(Copilot Studio returned no content)_";
+const EMPTY_PROMPT_NOTE = "_(empty message — Copilot Studio was not called)_";
 
 /** How much of an upstream error body to keep for the failure card. */
 const FAILURE_BODY_TAIL_CHARS = 400;
@@ -123,7 +123,7 @@ interface ConsumeResult {
 class TurnTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(
-      `Copilot Studio 响应超时（${String(timeoutMs)} ms）。若持续出现，请检查 Agent 是否已发布、token 权限与网络连通性`,
+      `Copilot Studio response timed out (${String(timeoutMs)} ms). If this persists, check that the agent is published, the token permissions, and network connectivity`,
     );
     this.name = "TurnTimeoutError";
   }
@@ -148,7 +148,7 @@ function parseEnumValue<T extends Record<string, string>>(
       return value as T[keyof T];
     }
   }
-  throw new Error(`${envName} 必须是 ${Object.keys(enumObj).join(" / ")} 之一，收到 "${raw}"`);
+  throw new Error(`${envName} must be one of ${Object.keys(enumObj).join(" / ")}, got "${raw}"`);
 }
 
 function buildConnectionSettings(config: CopilotStudioAdapterConfig): ConnectionSettings {
@@ -185,7 +185,7 @@ function buildMsalOptions(
   scopes: readonly string[],
 ): MsalAuthOptions {
   if (config.tenantId === null || config.appClientId === null) {
-    throw new Error("缺少 COPILOT_STUDIO_TENANT_ID / COPILOT_STUDIO_APP_CLIENT_ID");
+    throw new Error("missing COPILOT_STUDIO_TENANT_ID / COPILOT_STUDIO_APP_CLIENT_ID");
   }
   return {
     clientId: config.appClientId,
@@ -204,13 +204,14 @@ function createTokenSource(
   switch (mode) {
     case "static-token": {
       const token = config.staticToken;
-      if (token === null) throw new Error("authMode=static-token 需要 COPILOT_STUDIO_STATIC_TOKEN");
+      if (token === null)
+        throw new Error("authMode=static-token requires COPILOT_STUDIO_STATIC_TOKEN");
       return () => Promise.resolve(token);
     }
     case "client-secret": {
       const secret = config.clientSecret;
       if (secret === null)
-        throw new Error("authMode=client-secret 需要 COPILOT_STUDIO_CLIENT_SECRET");
+        throw new Error("authMode=client-secret requires COPILOT_STUDIO_CLIENT_SECRET");
       const options = buildMsalOptions(config, resolveScopes(config, settings));
       return createClientSecretTokenSource(options, secret);
     }
@@ -584,7 +585,7 @@ async function raceStep<T>(
 
 async function runLogin(config: CopilotStudioAdapterConfig): Promise<void> {
   if (config.authMode !== "device-code") {
-    console.log(`当前 authMode=${config.authMode}，无需设备码登录。`);
+    console.log(`authMode=${config.authMode} — device-code login is not needed.`);
     return;
   }
   let settings: ConnectionSettings;
@@ -597,20 +598,20 @@ async function runLogin(config: CopilotStudioAdapterConfig): Promise<void> {
   const username = await loginWithDeviceCode(options, (instruction) => {
     console.log(instruction);
   });
-  console.log(`登录成功：${username}（token 缓存已写入 ${options.cacheFilePath}）`);
+  console.log(`Signed in as ${username} (token cache written to ${options.cacheFilePath})`);
 }
 
 async function runLogout(config: CopilotStudioAdapterConfig): Promise<void> {
   const cacheFile = path.join(config.dataDir, MSAL_CACHE_FILE);
   await fs.promises.rm(cacheFile, { force: true });
-  console.log(`已删除 token 缓存：${cacheFile}`);
+  console.log(`Deleted token cache: ${cacheFile}`);
 }
 
 function serve(config: CopilotStudioAdapterConfig): void {
   const problems = validateConfig(config);
   if (problems.length > 0) {
     for (const problem of problems) {
-      process.stderr.write(`${PROTOCOL_LOG_PREFIX} 配置错误: ${problem}\n`);
+      process.stderr.write(`${PROTOCOL_LOG_PREFIX} config error: ${problem}\n`);
     }
     process.exit(1);
   }
@@ -633,14 +634,14 @@ function main(): void {
 
   if (subcommand === "login") {
     runLogin(config).catch((err: unknown) => {
-      console.error(`登录失败: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     });
     return;
   }
   if (subcommand === "logout") {
     runLogout(config).catch((err: unknown) => {
-      console.error(`登出失败: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`Logout failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     });
     return;

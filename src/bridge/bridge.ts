@@ -18,6 +18,7 @@ import {
   type LarkCommand,
 } from "../interpreter/lark-interpreter.js";
 import { ChatRuntime, type PendingMessage } from "./chat-runtime.js";
+import { LarkToolServer } from "../lark-tools/lark-tool-server.js";
 import type {
   CardActionClicker,
   CardActionResult,
@@ -35,14 +36,15 @@ const DEFAULT_SHOW_THOUGHTS = true;
 const DEFAULT_SHOW_TOOLS = true;
 const DEFAULT_SHOW_CANCEL_BUTTON = true;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_ASK_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 const IDLE_CLEANUP_INTERVAL_MS = 2 * 60_000;
 
-const ORPHAN_CARD_REASON = "会话已结束，本次确认已失效";
+const ORPHAN_CARD_REASON = "The session has ended — this approval request has expired";
 
 const ACCESS_DISABLED_NOTICE: NoticeCardSpec = {
-  title: "访问控制未启用",
-  body: "当前实例未启用访问控制，所有可见用户均可使用机器人。",
+  title: "Access control disabled",
+  body: "Access control is not enabled on this instance — every user who can see the bot may use it.",
   template: "grey",
 };
 
@@ -54,13 +56,13 @@ const CHAT_TYPE_GROUP = "group";
 
 const COMMAND_NOTICES: Readonly<Record<"cancel" | "new", NoticeCardSpec>> = {
   cancel: {
-    title: "已取消",
-    body: "已取消当前任务，agent 进程保留以便后续消息继续。",
+    title: "Cancelled",
+    body: "The current task was cancelled. The agent process is kept alive for follow-up messages.",
     template: "grey",
   },
   new: {
-    title: "已重置会话",
-    body: "下次消息将启动一个全新的 agent 会话。",
+    title: "Session reset",
+    body: "Your next message will start a brand-new agent session.",
     template: "green",
   },
 };
@@ -91,6 +93,10 @@ interface CardActionPayload {
   c?: string;
   /** Set on the unified card's "cancel current task" button. */
   cancel?: boolean;
+  /** Ask id (set on `lark_ask_choice` interactive cards). */
+  ask?: string;
+  /** Selected option id (set on `lark_ask_choice` interactive cards). */
+  opt?: string;
 }
 
 export interface LarkBridgeLarkOptions {
@@ -119,7 +125,7 @@ export interface LarkBridgeAgentOptions {
   /** Include `tool_call` / `tool_call_update` events in the unified card. Default `true`. */
   showTools?: boolean;
   /**
-   * Render the "中断当前任务" button at the bottom of the running unified
+   * Render the "Stop current task" button at the bottom of the running unified
    * card. When `false`, users can still cancel via `/cancel` chat command
    * but the in-card button is hidden. Default `true`.
    */
@@ -148,10 +154,28 @@ export interface LarkBridgeSessionOptions {
   maxConcurrentChats?: number;
 }
 
+export interface LarkToolsOptions {
+  /**
+   * Enable the in-process Lark MCP tool server, giving the agent a reverse
+   * channel into Lark (ask the user a question, download an attachment).
+   * Default `false`. Only injected into agents advertising HTTP MCP support.
+   * See `docs/lark-mcp-tool-server.md`.
+   */
+  enabled: boolean;
+  /** Auto-fail a blocking interactive tool after this many ms (0 = never). Default 5 min. */
+  askTimeoutMs?: number;
+}
+
 export interface LarkBridgeOptions {
   lark: LarkBridgeLarkOptions;
   agent: LarkBridgeAgentOptions;
   session?: LarkBridgeSessionOptions;
+
+  /**
+   * In-process Lark MCP tool server. When omitted or disabled the agent has
+   * no reverse channel into Lark (today's behaviour).
+   */
+  tools?: LarkToolsOptions;
 
   sessionStore: SessionStore;
 
@@ -227,6 +251,7 @@ export class LarkBridge {
   private readonly tenantId: string;
   private readonly transportFactory: LarkTransportFactory;
   private readonly audit: AuditLogger;
+  private readonly toolServer: LarkToolServer | null;
 
   private readonly chats = new Map<string, ChatRuntime>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -278,6 +303,13 @@ export class LarkBridge {
     this.maxConcurrentChats = opts.session?.maxConcurrentChats ?? DEFAULT_MAX_CONCURRENT_CHATS;
     this.accessControl = opts.accessControl ?? null;
     this.identity = opts.identity ?? null;
+    this.toolServer = opts.tools?.enabled
+      ? new LarkToolServer({
+          http: this.http,
+          logger: this.logger,
+          askTimeoutMs: opts.tools.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS,
+        })
+      : null;
   }
 
   /**
@@ -293,6 +325,7 @@ export class LarkBridge {
     try {
       await this.sessionStore.init();
       await this.accessControl?.init();
+      await this.toolServer?.start();
 
       this.cleanupTimer = setInterval(() => {
         this.evictIdle();
@@ -316,6 +349,7 @@ export class LarkBridge {
       if (this.cleanupTimer) clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
       this.ws = null;
+      await this.toolServer?.stop().catch(() => undefined);
       this.started = false;
       throw err;
     }
@@ -332,6 +366,7 @@ export class LarkBridge {
     this.ws = null;
     for (const runtime of this.chats.values()) runtime.shutdown();
     this.chats.clear();
+    await this.toolServer?.stop();
     await this.sessionStore.close();
     await this.accessControl?.close();
     this.started = false;
@@ -467,6 +502,7 @@ export class LarkBridge {
         const runtime = this.chats.get(chatId);
         runtime?.shutdown();
         this.chats.delete(chatId);
+        this.unregisterTools(chatId);
         await this.presenter.replyNoticeCard(messageId, COMMAND_NOTICES.new);
         return;
       }
@@ -484,7 +520,7 @@ export class LarkBridge {
         return;
       case "access-usage":
         await this.presenter.replyNoticeCard(messageId, {
-          title: "命令用法",
+          title: "Command usage",
           body: command.usage,
           template: "blue",
         });
@@ -506,27 +542,27 @@ export class LarkBridge {
   private async handleHelp(messageId: string, userId: string): Promise<void> {
     const privileged = this.accessControl?.isPrivileged(userId) ?? true;
     const lines = [
-      "**通用命令**",
-      "- `/help` · `帮助` — 显示此帮助",
-      "- `/status` · `状态` — 查看当前会话与身份状态",
-      "- `/cancel` · `/stop` · `取消` — 中断当前任务（保留 agent 进程）",
-      "- `/new` · `/restart` — 重置会话，下条消息启动全新 agent 会话",
+      "**General commands**",
+      "- `/help` — show this help",
+      "- `/status` — show the current session and identity status",
+      "- `/cancel` · `/stop` — stop the current task (keeps the agent process)",
+      "- `/new` · `/restart` — reset the session; the next message starts a fresh agent session",
     ];
     if (privileged) {
       lines.push(
         "",
-        "**管理命令（owner / admin）**",
-        "- `/config` · `配置` — 查看运行配置",
-        "- `/access` — 查看访问控制名单",
-        "- `/invite user @用户…` · `/invite admin @用户…` — 加入用户 / 管理员白名单",
-        "- `/invite group` — 授权当前群聊",
-        "- `/remove user @用户…` · `/remove admin @用户…` · `/remove group` — 移除授权",
-        "- `/mention on` · `/mention off` — 群聊是否需要 @机器人",
+        "**Admin commands (owner / admin)**",
+        "- `/config` — show the runtime configuration",
+        "- `/access` — show the access-control lists",
+        "- `/invite user @user…` · `/invite admin @user…` — add to the user / admin allowlist",
+        "- `/invite group` — authorize the current group chat",
+        "- `/remove user @user…` · `/remove admin @user…` · `/remove group` — revoke access",
+        "- `/mention on` · `/mention off` — whether group chats require an @mention",
       );
     }
-    lines.push("", "在群聊中使用命令时，请先 @机器人。");
+    lines.push("", "In a group chat, @mention the bot before typing a command.");
     await this.presenter.replyNoticeCard(messageId, {
-      title: "命令帮助",
+      title: "Command help",
       body: lines.join("\n"),
       template: "blue",
     });
@@ -534,33 +570,39 @@ export class LarkBridge {
 
   private async handleStatus(chatId: string, userId: string, messageId: string): Promise<void> {
     const runtime = this.chats.get(chatId);
-    const sessionState = !runtime ? "无活动会话" : runtime.processing ? "运行中" : "空闲（进程保留）";
-    const role = this.accessControl ? this.accessControl.roleOf(userId) : "（访问控制未启用）";
-    const identity = this.identity ? this.identity.policy : "（未配置）";
+    const sessionState = !runtime
+      ? "no active session"
+      : runtime.processing
+        ? "running"
+        : "idle (process kept alive)";
+    const role = this.accessControl
+      ? this.accessControl.roleOf(userId)
+      : "(access control disabled)";
+    const identity = this.identity ? this.identity.policy : "(not configured)";
 
     const body = [
-      `**你的身份**: ${role}`,
-      `**租户**: ${this.tenantId}`,
+      `**Your role**: ${role}`,
+      `**Tenant**: ${this.tenantId}`,
       `**Agent**: ${this.describeAgentLabel()}`,
-      `**会话**: ${sessionState}`,
-      `**连接**: ${this.describeConnection()}`,
-      `**身份策略**: ${identity}`,
-      `**权限模式**: ${this.agentOpts.permissionMode}`,
-      `**活动会话数**: ${this.chats.size} / ${this.maxConcurrentChats}`,
+      `**Session**: ${sessionState}`,
+      `**Connection**: ${this.describeConnection()}`,
+      `**Identity policy**: ${identity}`,
+      `**Permission mode**: ${this.agentOpts.permissionMode}`,
+      `**Active sessions**: ${this.chats.size} / ${this.maxConcurrentChats}`,
     ].join("\n");
     await this.presenter.replyNoticeCard(messageId, {
-      title: "状态",
+      title: "Status",
       body,
       template: "blue",
     });
   }
 
-  /** WebSocket connection state for `/status`, e.g. `connected` or `reconnecting (2 次)`. */
+  /** WebSocket connection state for `/status`, e.g. `connected` or `reconnecting (2 attempts)`. */
   private describeConnection(): string {
     const status = this.ws?.getConnectionStatus();
-    if (!status) return "未知";
+    if (!status) return "unknown";
     return status.reconnectAttempts > 0
-      ? `${status.state}（重连 ${status.reconnectAttempts} 次）`
+      ? `${status.state} (${status.reconnectAttempts} reconnect attempts)`
       : status.state;
   }
 
@@ -568,26 +610,26 @@ export class LarkBridge {
     const ac = await this.requirePrivilegedAccess(userId, messageId);
     if (!ac) return;
 
-    const onOff = (v: boolean): string => (v ? "开" : "关");
+    const onOff = (v: boolean): string => (v ? "on" : "off");
     const s = ac.snapshot();
-    const owner = s.effectiveOwner ?? "（未设置）";
+    const owner = s.effectiveOwner ?? "(not set)";
     const body = [
-      "**展示**",
-      `- 思考过程: ${onOff(this.agentOpts.showThoughts)}`,
-      `- 工具调用: ${onOff(this.agentOpts.showTools)}`,
-      `- 中断按钮: ${onOff(this.agentOpts.showCancelButton)}`,
+      "**Display**",
+      `- Thoughts: ${onOff(this.agentOpts.showThoughts)}`,
+      `- Tool calls: ${onOff(this.agentOpts.showTools)}`,
+      `- Stop button: ${onOff(this.agentOpts.showCancelButton)}`,
       "",
-      "**权限 / 身份**",
-      `- 工具权限模式: ${this.agentOpts.permissionMode}`,
-      `- 身份策略: ${this.identity ? this.identity.policy : "（未配置）"}`,
+      "**Permissions / identity**",
+      `- Tool permission mode: ${this.agentOpts.permissionMode}`,
+      `- Identity policy: ${this.identity ? this.identity.policy : "(not configured)"}`,
       "",
-      "**访问控制**",
+      "**Access control**",
       `- Owner: ${owner}`,
-      `- Admins: ${s.admins.length}｜Users: ${s.users.length}｜Groups: ${s.groups.length}`,
-      `- 群聊需要 @机器人: ${s.requireMentionInGroup ? "是" : "否"}`,
+      `- Admins: ${s.admins.length} | Users: ${s.users.length} | Groups: ${s.groups.length}`,
+      `- Group chats require @mention: ${s.requireMentionInGroup ? "yes" : "no"}`,
     ].join("\n");
     await this.presenter.replyNoticeCard(messageId, {
-      title: "运行配置",
+      title: "Runtime configuration",
       body,
       template: "blue",
     });
@@ -616,10 +658,10 @@ export class LarkBridge {
       detail: { enabled },
     });
     await this.presenter.replyNoticeCard(messageId, {
-      title: "已更新",
+      title: "Updated",
       body: enabled
-        ? "群聊中现在需要 @机器人 才会响应。"
-        : "群聊中现在无需 @机器人 即可响应（仍受群白名单限制）。",
+        ? "The bot now only responds in group chats when it is @mentioned."
+        : "The bot now responds in group chats without an @mention (the group allowlist still applies).",
       template: "green",
     });
   }
@@ -657,7 +699,7 @@ export class LarkBridge {
       case "group": {
         const added = ac.grantGroup(chatId);
         return {
-          title: added ? "已授权群聊" : "群聊已在白名单",
+          title: added ? "Group chat authorized" : "Group chat already allowlisted",
           body: `chat_id: ${chatId}`,
           template: added ? "green" : "grey",
         };
@@ -666,12 +708,16 @@ export class LarkBridge {
       case "admin": {
         const added =
           target.type === "user" ? ac.grantUsers(target.openIds) : ac.grantAdmins(target.openIds);
-        const label = target.type === "user" ? "用户" : "管理员";
+        const label = target.type === "user" ? "users" : "admins";
         if (added.length === 0) {
-          return { title: "无变化", body: `选中的${label}已在名单中。`, template: "grey" };
+          return {
+            title: "No change",
+            body: `The selected ${label} are already on the list.`,
+            template: "grey",
+          };
         }
         const names = await this.resolveNames(added);
-        return { title: `已添加${label}`, body: names.join("\n"), template: "green" };
+        return { title: `Added ${label}`, body: names.join("\n"), template: "green" };
       }
       default:
         return assertNever(target);
@@ -687,7 +733,7 @@ export class LarkBridge {
       case "group": {
         const removed = ac.revokeGroup(chatId);
         return {
-          title: removed ? "已移除群聊授权" : "群聊不在白名单",
+          title: removed ? "Group chat access revoked" : "Group chat not allowlisted",
           body: `chat_id: ${chatId}`,
           template: removed ? "orange" : "grey",
         };
@@ -695,19 +741,17 @@ export class LarkBridge {
       case "user":
       case "admin": {
         const removed =
-          target.type === "user"
-            ? ac.revokeUsers(target.openIds)
-            : ac.revokeAdmins(target.openIds);
-        const label = target.type === "user" ? "用户" : "管理员";
+          target.type === "user" ? ac.revokeUsers(target.openIds) : ac.revokeAdmins(target.openIds);
+        const label = target.type === "user" ? "users" : "admins";
         if (removed.length === 0) {
           return {
-            title: "无变化",
-            body: `选中的${label}不在名单中（owner 无法被移除）。`,
+            title: "No change",
+            body: `The selected ${label} are not on the list (the owner cannot be removed).`,
             template: "grey",
           };
         }
         const names = await this.resolveNames(removed);
-        return { title: `已移除${label}`, body: names.join("\n"), template: "orange" };
+        return { title: `Removed ${label}`, body: names.join("\n"), template: "orange" };
       }
       default:
         return assertNever(target);
@@ -723,19 +767,19 @@ export class LarkBridge {
     const s = ac.snapshot();
     const ownerLine = s.effectiveOwner
       ? (await this.resolveNames([s.effectiveOwner]))[0]
-      : "（未设置 — 首个私聊用户将成为 owner）";
-    const admins = s.admins.length > 0 ? (await this.resolveNames(s.admins)).join("\n") : "（无）";
-    const users = s.users.length > 0 ? (await this.resolveNames(s.users)).join("\n") : "（无）";
-    const groups = s.groups.length > 0 ? s.groups.join("\n") : "（无）";
+      : "(not set — the first direct-message user becomes the owner)";
+    const admins = s.admins.length > 0 ? (await this.resolveNames(s.admins)).join("\n") : "(none)";
+    const users = s.users.length > 0 ? (await this.resolveNames(s.users)).join("\n") : "(none)";
+    const groups = s.groups.length > 0 ? s.groups.join("\n") : "(none)";
     const body = [
       `**Owner**: ${ownerLine}`,
       `**Admins**:\n${admins}`,
-      `**Users (私聊白名单)**:\n${users}`,
-      `**Groups (群白名单)**:\n${groups}`,
-      `**群聊需要 @机器人**: ${s.requireMentionInGroup ? "是" : "否"}`,
+      `**Users (direct-message allowlist)**:\n${users}`,
+      `**Groups (group allowlist)**:\n${groups}`,
+      `**Group chats require @mention**: ${s.requireMentionInGroup ? "yes" : "no"}`,
     ].join("\n\n");
     await this.presenter.replyNoticeCard(messageId, {
-      title: "访问控制",
+      title: "Access control",
       body,
       template: "blue",
     });
@@ -762,8 +806,8 @@ export class LarkBridge {
         outcome: "denied",
       });
       await this.presenter.replyNoticeCard(messageId, {
-        title: "无权限",
-        body: "仅机器人 owner / admin 可执行访问控制命令。",
+        title: "Not permitted",
+        body: "Only the bot owner / admins can run access-control commands.",
         template: "red",
       });
       return null;
@@ -773,9 +817,7 @@ export class LarkBridge {
 
   /** Resolve `open_id`s to `"Name (open_id)"` display strings. */
   private async resolveNames(openIds: readonly string[]): Promise<string[]> {
-    return Promise.all(
-      openIds.map(async (id) => `${await this.http.getUserName(id)} (${id})`),
-    );
+    return Promise.all(openIds.map(async (id) => `${await this.http.getUserName(id)} (${id})`));
   }
 
   private async enqueueWithContext(
@@ -786,6 +828,9 @@ export class LarkBridge {
     prompt: acp.ContentBlock[],
   ): Promise<void> {
     const runtime = this.acquireRuntime(chatId);
+    // Bind interactive tool cards (ask_choice) to the current operator so
+    // only they can answer — reuses the permission-card operator rule.
+    this.toolServer?.contextForChat(chatId)?.setOperator(userId);
 
     if (runtime.needsContext(userId)) {
       const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
@@ -812,8 +857,9 @@ export class LarkBridge {
       // ChatRuntime never registered itself as active, so drop it and let
       // the next message try again from scratch.
       this.chats.delete(chatId);
+      this.unregisterTools(chatId);
       this.logger.error({ err, chatId }, "agent bootstrap failed");
-      const summary = `⚠️ Agent 启动失败: ${formatBootstrapError(err)}`;
+      const summary = `⚠️ Agent failed to start: ${formatBootstrapError(err)}`;
       await this.presenter.replyText(messageId, summary).catch((sendErr: unknown) => {
         this.logger.warn({ err: sendErr }, "bootstrap error reply failed");
       });
@@ -826,6 +872,7 @@ export class LarkBridge {
 
     if (this.chats.size >= this.maxConcurrentChats) this.evictOldest();
 
+    const mcpServers = this.toolServer ? [this.toolServer.register(chatId)] : undefined;
     const runtime = new ChatRuntime({
       chatId,
       agentCommand: this.agentOpts.command,
@@ -840,6 +887,7 @@ export class LarkBridge {
       presenter: this.presenter,
       sessionStore: this.sessionStore,
       logger: this.logger,
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
     });
     this.chats.set(chatId, runtime);
     return runtime;
@@ -859,8 +907,8 @@ export class LarkBridge {
   private buildPromptContext(ctx: PromptContext): string | null {
     if (this.identity) return this.identity.promptContext(ctx);
     return ctx.chatType === "group"
-      ? `[上下文: 群聊 "${ctx.chatName ?? ""}" (${ctx.chatId}) 中用户 ${ctx.userName} (${ctx.userId}) 的消息]`
-      : `[上下文: 用户 ${ctx.userName} (${ctx.userId}) 的私聊消息]`;
+      ? `[Context: message from ${ctx.userName} (${ctx.userId}) in group chat "${ctx.chatName ?? ""}" (${ctx.chatId})]`
+      : `[Context: direct message from ${ctx.userName} (${ctx.userId})]`;
   }
 
   private handleCardAction(event: Lark.CardActionEvent): void {
@@ -872,12 +920,66 @@ export class LarkBridge {
       return;
     }
 
+    if (value.ask && value.opt) {
+      const clicker: CardActionClicker = {
+        openId: event.operator.openId,
+        privileged: this.accessControl?.isPrivileged(event.operator.openId) ?? false,
+      };
+      this.handleAskCardAction(value.c, value.ask, value.opt, clicker);
+      return;
+    }
+
     if (!value.r || !value.o) return;
     const clicker: CardActionClicker = {
       openId: event.operator.openId,
       privileged: this.accessControl?.isPrivileged(event.operator.openId) ?? false,
     };
-    this.handlePermissionCardAction(event, value.c, value.r, value.o, value.n, value.k, value.t, clicker);
+    this.handlePermissionCardAction(
+      event,
+      value.c,
+      value.r,
+      value.o,
+      value.n,
+      value.k,
+      value.t,
+      clicker,
+    );
+  }
+
+  /**
+   * Route a `lark_ask_choice` card click to the chat's tool context. The
+   * context patches its own card on resolve; the bridge only records the
+   * outcome and rejects non-operator clicks (operator binding lives in
+   * {@link ToolContext.resolveAsk}).
+   */
+  private handleAskCardAction(
+    chatId: string,
+    askId: string,
+    optionId: string,
+    clicker: CardActionClicker,
+  ): void {
+    const result = this.toolServer?.resolveAsk(chatId, askId, optionId, clicker) ?? "orphan";
+    if (result === "forbidden") {
+      this.audit.record({
+        action: "tool.ask_rejected",
+        chatId,
+        operatorOpenId: clicker.openId,
+        outcome: "denied",
+        detail: { askId, reason: "not_originating_operator" },
+      });
+      return;
+    }
+    if (result === "orphan") {
+      this.logger.info({ chatId, askId }, "orphan ask-card action");
+      return;
+    }
+    this.audit.record({
+      action: "tool.ask_answered",
+      chatId,
+      operatorOpenId: clicker.openId,
+      outcome: "answered",
+      detail: { askId, optionId },
+    });
   }
 
   private handleCancelButton(chatId: string): void {
@@ -903,7 +1005,8 @@ export class LarkBridge {
     clicker: CardActionClicker,
   ): void {
     const runtime = this.chats.get(chatId);
-    const result: CardActionResult = runtime?.handleCardAction(requestId, optionId, clicker) ?? "orphan";
+    const result: CardActionResult =
+      runtime?.handleCardAction(requestId, optionId, clicker) ?? "orphan";
     const messageId = event.messageId;
 
     if (result === "forbidden") {
@@ -958,7 +1061,16 @@ export class LarkBridge {
       this.logger.info({ chatId }, "evicting idle chat");
       runtime.shutdown();
       this.chats.delete(chatId);
+      this.unregisterTools(chatId);
     }
+  }
+
+  /** Best-effort teardown of a chat's Lark tool context (no-op if disabled). */
+  private unregisterTools(chatId: string): void {
+    if (!this.toolServer) return;
+    void this.toolServer.unregister(chatId).catch((err: unknown) => {
+      this.logger.debug({ err, chatId }, "tool context unregister failed");
+    });
   }
 
   private evictOldest(): void {
@@ -974,5 +1086,6 @@ export class LarkBridge {
     const runtime = this.chats.get(oldest.chatId);
     runtime?.shutdown();
     this.chats.delete(oldest.chatId);
+    this.unregisterTools(oldest.chatId);
   }
 }

@@ -110,7 +110,7 @@ describe("snapshot extraction", () => {
 
   it("renders citation attributions as a numbered markdown list", () => {
     const rendered = renderAttributions(extractResponseMessage(snapshot, "问题原文"));
-    expect(rendered).toContain("**引用来源**");
+    expect(rendered).toContain("**Sources**");
     expect(rendered).toContain("[季度报告.docx](https://contoso.sharepoint.com/report)");
     expect(rendered).not.toContain("ignored.example.com");
   });
@@ -190,7 +190,7 @@ describe("describeGraphFailure", () => {
     expect(describeGraphFailure(401, "", LOGIN_COMMAND)).toMatch(/^Authentication required/);
     const forbidden = describeGraphFailure(403, "", LOGIN_COMMAND);
     expect(forbidden).toMatch(/^Authentication required/);
-    expect(forbidden).toContain("许可证");
+    expect(forbidden).toContain("license");
   });
 
   it("suggests /new on 404 and includes the body tail", () => {

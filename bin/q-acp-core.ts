@@ -23,10 +23,11 @@ export const DEFAULT_MAX_HISTORY_CHARS = 24_000;
 export const SESSION_FILE_VERSION = 1 as const;
 export const SESSION_FILE_EXT = ".json";
 
-export const HISTORY_HEADER = "=== 对话历史（仅供上下文参考，请勿重复回答历史中的旧问题）===";
-export const CURRENT_HEADER = "=== 当前请求 ===";
+export const HISTORY_HEADER =
+  "=== Conversation history (context only — do not re-answer old questions from it) ===";
+export const CURRENT_HEADER = "=== Current request ===";
 
-export const ROLE_LABELS = { user: "用户", assistant: "助手" } as const;
+export const ROLE_LABELS = { user: "User", assistant: "Assistant" } as const;
 
 export type Role = keyof typeof ROLE_LABELS;
 

@@ -30,10 +30,7 @@ const ALICE = "ou_alice";
 const BOB = "ou_bob";
 const GROUP = "oc_group";
 
-async function makeAccess(
-  store: AccessStore,
-  configuredOwner?: string,
-): Promise<AccessControl> {
+async function makeAccess(store: AccessStore, configuredOwner?: string): Promise<AccessControl> {
   const ac = new AccessControl({
     store,
     logger: noopLogger,

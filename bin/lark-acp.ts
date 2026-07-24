@@ -47,6 +47,7 @@ import type {
   PermissionMode,
   IdentityPolicy,
   LarkDomainInput,
+  LarkToolsOptions,
 } from "../src/index.js";
 import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
 import { parseNpxInvocation, preferPreparedShim, SHIMS_DIRNAME } from "./shims.js";
@@ -71,6 +72,7 @@ const ENV_OWNER = "LARK_ACP_OWNER";
 const ENV_IDENTITY = "LARK_ACP_IDENTITY";
 const ENV_TENANT_ID = "LARK_ACP_TENANT_ID";
 const DEFAULT_TENANT_ID = "default";
+const ENV_LARK_TOOLS = "LARK_ACP_TOOLS_ENABLED";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
@@ -81,6 +83,9 @@ const LARK_CLI_CONFIG_DIRNAME = "lark-cli";
 // silent for 60s, and don't let a stuck handshake hang forever.
 const DEFAULT_PING_TIMEOUT_SECONDS = 60;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
+// Mirrors the bridge's own DEFAULT_ASK_TIMEOUT_MS (bridge.ts) so the CLI's
+// printed default stays truthful without importing an internal constant.
+const DEFAULT_ASK_TIMEOUT_MS = 5 * 60_000;
 
 // ---------- paths ---------------------------------------------------------
 
@@ -158,6 +163,13 @@ interface FileIdentity {
   readonly promptContext?: boolean;
 }
 
+interface FileTools {
+  /** Enable the in-process Lark MCP tool server. Default `false`. */
+  readonly enabled?: boolean;
+  /** Auto-fail a blocking interactive tool after this many ms. Default 5 min. */
+  readonly askTimeoutMs?: number;
+}
+
 interface FileConfig {
   readonly credentials: FileCredentials;
   readonly dataDir?: string;
@@ -166,6 +178,7 @@ interface FileConfig {
   readonly runtime: FileRuntime;
   readonly access: FileAccess;
   readonly identity: FileIdentity;
+  readonly tools: FileTools;
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
 }
 
@@ -174,6 +187,7 @@ const EMPTY_FILE_CONFIG: FileConfig = {
   runtime: {},
   access: {},
   identity: {},
+  tools: {},
   agents: {},
 };
 
@@ -338,6 +352,16 @@ function readConfigFile(filePath: string): FileConfig {
     ...optBoolField("identity.promptContext", identityObj.promptContext),
   };
 
+  const toolsObj = asObjectOpt("tools", root.tools) ?? {};
+  const tools: FileTools = {
+    ...optBoolField("tools.enabled", toolsObj.enabled),
+    ...optNumberField(
+      "tools.askTimeoutMs",
+      asNonNegIntOpt("tools.askTimeoutMs", toolsObj.askTimeoutMs),
+      "askTimeoutMs",
+    ),
+  };
+
   const dataDir = asStringOpt("dataDir", root.dataDir);
   const tenantId = asStringOpt("tenantId", root.tenantId);
   const agents = parseAgentsBlock(root.agents);
@@ -349,6 +373,7 @@ function readConfigFile(filePath: string): FileConfig {
     runtime,
     access,
     identity,
+    tools,
     agents,
   };
 }
@@ -460,6 +485,8 @@ interface ParsedArgs {
   readonly identityPolicy?: IdentityPolicy;
   /** `--inject-lark-credentials`: inject bot app credentials into the agent env. */
   readonly injectLarkCredentials?: boolean;
+  /** `--lark-tools`: enable the in-process Lark MCP tool server. */
+  readonly larkToolsEnabled?: boolean;
 }
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -490,6 +517,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let disableAccessControl: boolean | undefined;
   let identityPolicy: IdentityPolicy | undefined;
   let injectLarkCredentials: boolean | undefined;
+  let larkToolsEnabled: boolean | undefined;
   let serviceAction: ParsedArgs["serviceAction"];
   let agentPreset: string | undefined;
 
@@ -642,6 +670,9 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--inject-lark-credentials":
         injectLarkCredentials = true;
         break;
+      case "--lark-tools":
+        larkToolsEnabled = true;
+        break;
       case "--permission-mode": {
         const raw = takeValue("--permission-mode");
         if (!isPermissionMode(raw)) {
@@ -738,6 +769,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(disableAccessControl !== undefined ? { disableAccessControl } : {}),
       ...(identityPolicy !== undefined ? { identityPolicy } : {}),
       ...(injectLarkCredentials !== undefined ? { injectLarkCredentials } : {}),
+      ...(larkToolsEnabled !== undefined ? { larkToolsEnabled } : {}),
       ...(serviceAction !== undefined ? { serviceAction } : {}),
     };
   }
@@ -767,6 +799,8 @@ interface EffectiveConfig {
   readonly pingTimeoutSec: number;
   readonly handshakeTimeoutMs: number;
   readonly tenantId: string;
+  readonly larkToolsEnabled: boolean;
+  readonly larkToolsAskTimeoutMs: number;
 }
 
 /**
@@ -883,6 +917,15 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     file.tenantId ??
     DEFAULT_TENANT_ID;
 
+  // ----- Lark MCP tools: flag > env > file > default (off) -----
+  const envLarkTools = process.env[ENV_LARK_TOOLS];
+  const larkToolsEnabled =
+    args.larkToolsEnabled ??
+    (envLarkTools !== undefined ? envLarkTools === "1" || envLarkTools === "true" : undefined) ??
+    file.tools.enabled ??
+    false;
+  const larkToolsAskTimeoutMs = file.tools.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+
   return {
     appId,
     appSecret,
@@ -905,6 +948,8 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     pingTimeoutSec,
     handshakeTimeoutMs,
     tenantId,
+    larkToolsEnabled,
+    larkToolsAskTimeoutMs,
   };
 }
 
@@ -968,6 +1013,10 @@ function printHelp(): void {
     `  --no-access-control    Disable access control (open to everyone — not recommended)`,
     `  --identity <policy>    lark-cli identity policy: ${IDENTITY_POLICIES.join(" | ")} (default ${DEFAULT_IDENTITY_POLICY})`,
     `  --inject-lark-credentials  Inject bot app credentials into the agent env (for lark-cli)`,
+    `  --lark-tools           Enable the in-process Lark MCP tool server (ask_choice,`,
+    `                         download_message_file) — gives the agent a reverse`,
+    `                         channel into Lark. Off by default. See`,
+    `                         docs/lark-mcp-tool-server.md.`,
     `  -h, --help             Show this help and exit`,
     `  -v, --version          Show version and exit`,
     ``,
@@ -1003,6 +1052,7 @@ function printHelp(): void {
     `    },`,
     `    "access": { "enabled": true, "ownerOpenId": "ou_..." },`,
     `    "identity": { "policy": "${DEFAULT_IDENTITY_POLICY}", "injectCredentials": false, "promptContext": true },`,
+    `    "tools": { "enabled": false, "askTimeoutMs": ${String(DEFAULT_ASK_TIMEOUT_MS)} },`,
     `    "agents": {`,
     `      "my-claude": {`,
     `        "label": "Claude (custom)",`,
@@ -1019,7 +1069,8 @@ function printHelp(): void {
     `  ${ENV_DOMAIN} overrides credentials.domain;`,
     `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode;`,
     `  ${ENV_OWNER} overrides access.ownerOpenId;`,
-    `  ${ENV_IDENTITY} overrides identity.policy.`,
+    `  ${ENV_IDENTITY} overrides identity.policy;`,
+    `  ${ENV_LARK_TOOLS} (1/true) overrides tools.enabled.`,
     ``,
     `Access control (on by default): the bridge is private — only the owner,`,
     `  admins, allowlisted users (DMs) and allowlisted groups may drive it.`,
@@ -1142,6 +1193,9 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   cliLogger.info(
     `connection:  ping-timeout ${cfg.pingTimeoutSec}s, handshake-timeout ${cfg.handshakeTimeoutMs}ms, auto-reconnect on`,
   );
+  cliLogger.info(
+    `lark tools:  ${cfg.larkToolsEnabled ? `enabled (ask-timeout ${String(cfg.larkToolsAskTimeoutMs)}ms)` : "disabled"}`,
+  );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
 
@@ -1191,6 +1245,10 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       idleTimeoutMs: cfg.idleTimeoutMs,
       maxConcurrentChats: cfg.maxChats,
     },
+    tools: {
+      enabled: cfg.larkToolsEnabled,
+      askTimeoutMs: cfg.larkToolsAskTimeoutMs,
+    } satisfies LarkToolsOptions,
     sessionStore,
     tenantId: cfg.tenantId,
     ...(accessControl ? { accessControl } : {}),
@@ -1354,7 +1412,9 @@ function runService(args: ParsedArgs): void {
   // install
   const agentId = args.agentPreset;
   if (agentId === undefined) {
-    throw new CliError("service install requires --agent <preset> (the service needs a fixed agent)");
+    throw new CliError(
+      "service install requires --agent <preset> (the service needs a fixed agent)",
+    );
   }
   const registry = buildRegistry(file.agents);
   if (!registry.has(agentId)) {
@@ -1377,7 +1437,12 @@ function runService(args: ParsedArgs): void {
     "--agent",
     agentId,
   ];
-  const def = buildServiceDefinition({ ...baseSpec, workingDir: cfg.cwd, dataDir: cfg.dataDir, args: svcArgs });
+  const def = buildServiceDefinition({
+    ...baseSpec,
+    workingDir: cfg.cwd,
+    dataDir: cfg.dataDir,
+    args: svcArgs,
+  });
 
   fs.mkdirSync(path.dirname(def.filePath), { recursive: true });
   fs.writeFileSync(def.filePath, def.content, "utf-8");

@@ -15,7 +15,7 @@ export function flattenPrompt(blocks: readonly acp.ContentBlock[]): string {
     }
     // The Lark interpreter only ever emits text blocks (it lowers images /
     // files / etc. into text placeholders), so this is a defensive fallback.
-    parts.push(`[${block.type} 内容已省略]`);
+    parts.push(`[${block.type} content omitted]`);
   }
   return parts.join("\n").trim();
 }

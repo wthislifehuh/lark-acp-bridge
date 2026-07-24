@@ -241,7 +241,7 @@ connection.newSession({
 
 **资源访问（高优）**
 
-- `lark.downloadMessageFile(messageId, fileKey)` —— 复用已有的 `messageResource.get`，扩展支持 `type: "file"` / `"audio"` 等；
+- `lark.downloadMessageFile(messageId, fileKey)` —— 桥接层已实现为 `downloadMessageResource(messageId, fileKey, type)`（复用 `messageResource.get`，支持 `type: "image" | "file"`），仅剩包一层 MCP 工具暴露给 Agent；
 - `lark.downloadMessageImage(messageId, imageKey)` —— 桥接层已实现，包一层暴露给 Agent；
 - `lark.listChatHistory(chatId, limit)` —— 拉取最近 N 条消息（需要权限 `im:message:readonly`）。
 

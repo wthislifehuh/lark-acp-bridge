@@ -111,8 +111,8 @@ describe("ActivityRenderer", () => {
       }),
     ).chunk;
     expect(out).toContain("请选择");
-    expect(out).toContain("**建议选项**: 查订单 / 转人工");
-    expect(out).toContain("1 个卡片附件");
+    expect(out).toContain("**Suggested actions**: 查订单 / 转人工");
+    expect(out).toContain("received 1 card attachment(s)");
   });
 
   it("flags endOfConversation", () => {

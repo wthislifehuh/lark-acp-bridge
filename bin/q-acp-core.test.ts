@@ -62,7 +62,7 @@ describe("flattenPrompt", () => {
       { type: "image", data: "aGk=", mimeType: "image/png" },
     ]);
     expect(flattened).toContain("look:");
-    expect(flattened).toContain("[image 内容已省略]");
+    expect(flattened).toContain("[image content omitted]");
   });
 });
 
@@ -78,8 +78,8 @@ describe("buildQInput", () => {
     ];
     const input = buildQInput(transcript, "q2");
     expect(input.startsWith(HISTORY_HEADER)).toBe(true);
-    expect(input).toContain("用户: q1");
-    expect(input).toContain("助手: a1");
+    expect(input).toContain("User: q1");
+    expect(input).toContain("Assistant: a1");
     expect(input.indexOf(CURRENT_HEADER)).toBeGreaterThan(input.indexOf("a1"));
     expect(input.endsWith("q2")).toBe(true);
   });

@@ -254,7 +254,7 @@ describe("m365-copilot-acp adapter", () => {
     // Cumulative snapshots must not duplicate the prefix.
     expect(output.match(/工程周会，组织者/g)).toHaveLength(1);
     expect(output).not.toContain("<Event>");
-    expect(output).toContain("**引用来源**");
+    expect(output).toContain("**Sources**");
     expect(output).toContain("[工程周会](https://teams.example.com/meeting/1)");
 
     expect(fake.createCount()).toBe(1);

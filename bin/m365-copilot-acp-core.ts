@@ -31,7 +31,7 @@ export const DEFAULT_M365_COPILOT_SCOPES: readonly string[] = [
   "https://graph.microsoft.com/ExternalItem.Read.All",
 ];
 
-const ATTRIBUTION_HEADER = "**引用来源**";
+const ATTRIBUTION_HEADER = "**Sources**";
 
 /**
  * Static, env-derived configuration. Resolved once at startup; users override
@@ -86,8 +86,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): M365CopilotAdapterConfig {
 export function validateConfig(config: M365CopilotAdapterConfig): string[] {
   const problems: string[] = [];
   if (config.staticToken !== null) return problems;
-  if (config.tenantId === null) problems.push("缺少 M365_COPILOT_TENANT_ID");
-  if (config.appClientId === null) problems.push("缺少 M365_COPILOT_APP_CLIENT_ID");
+  if (config.tenantId === null) problems.push("missing M365_COPILOT_TENANT_ID");
+  if (config.appClientId === null) problems.push("missing M365_COPILOT_APP_CLIENT_ID");
   return problems;
 }
 
@@ -320,7 +320,7 @@ export function renderAttributions(message: ConversationMessage | null): string 
     const key = url || name;
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const label = name || `来源 ${String(lines.length + 1)}`;
+    const label = name || `Source ${String(lines.length + 1)}`;
     lines.push(
       url
         ? `${String(lines.length + 1)}. [${label}](${url})`
@@ -350,20 +350,20 @@ export function describeGraphFailure(
   bodyTail: string,
   loginCommand: string,
 ): string {
-  const detail = bodyTail ? `：${bodyTail}` : "";
+  const detail = bodyTail ? `: ${bodyTail}` : "";
   switch (status) {
     case HTTP_UNAUTHORIZED:
-      return `Authentication required: Microsoft Graph 返回 401（token 无效/过期）。请重新运行 \`${loginCommand}\`${detail}`;
+      return `Authentication required: Microsoft Graph returned 401 (token invalid or expired). Please re-run \`${loginCommand}\`${detail}`;
     case HTTP_FORBIDDEN:
       return (
-        `Authentication required: Microsoft Graph 返回 403。` +
-        `请确认登录用户拥有 Microsoft 365 Copilot 许可证、Entra 应用已获全部所需 Graph 权限（需管理员同意）${detail}`
+        `Authentication required: Microsoft Graph returned 403. ` +
+        `Check that the signed-in user has a Microsoft 365 Copilot license and that the Entra app has been granted every required Graph permission (admin consent needed)${detail}`
       );
     case HTTP_NOT_FOUND:
-      return `Microsoft Graph 返回 404：会话可能已过期或被删除，请发送 /new 重新开始${detail}`;
+      return `Microsoft Graph returned 404: the conversation may have expired or been deleted — send /new to start over${detail}`;
     case HTTP_TOO_MANY_REQUESTS:
-      return `Microsoft Graph 返回 429（限流），请稍后重试${detail}`;
+      return `Microsoft Graph returned 429 (rate limited) — please retry later${detail}`;
     default:
-      return `Microsoft 365 Copilot Chat API 请求失败（HTTP ${String(status)}）${detail}`;
+      return `Microsoft 365 Copilot Chat API request failed (HTTP ${String(status)})${detail}`;
   }
 }

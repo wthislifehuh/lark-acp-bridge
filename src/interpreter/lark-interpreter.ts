@@ -230,9 +230,11 @@ function parseNonTextMessage(message: Lark.RawMessageEvent["message"]): acp.Cont
     case "location":
       return parseLocation(message.content);
     case "merge_forward":
-      return [{ type: "text", text: "[合并转发消息 — 请通过工具调用获取子消息]" }];
+      return [
+        { type: "text", text: "[merged forward message — use a tool call to fetch the children]" },
+      ];
     default:
-      return [{ type: "text", text: `[${message.message_type} 消息 — 暂不支持]` }];
+      return [{ type: "text", text: `[${message.message_type} message — not supported yet]` }];
   }
 }
 
@@ -241,10 +243,10 @@ function blocksToPrompt(blocks: acp.ContentBlock[]): InterpretedMessage {
 }
 
 const INVITE_USAGE =
-  "用法: /invite user @用户... | /invite admin @用户... | /invite group（当前群）";
+  "Usage: /invite user @user... | /invite admin @user... | /invite group (current group)";
 const REMOVE_USAGE =
-  "用法: /remove user @用户... | /remove admin @用户... | /remove group（当前群）";
-const MENTION_USAGE = "用法: /mention on | /mention off";
+  "Usage: /remove user @user... | /remove admin @user... | /remove group (current group)";
+const MENTION_USAGE = "Usage: /mention on | /mention off";
 
 function detectCommand(
   text: string,
@@ -340,7 +342,7 @@ function extractTextContent(
 
 function parsePost(raw: string, messageId: string): acp.ContentBlock[] {
   const payload = safeParse<PostPayload>(raw);
-  if (!payload) return [{ type: "text", text: "[富文本消息解析失败]" }];
+  if (!payload) return [{ type: "text", text: "[failed to parse rich-text message]" }];
 
   const lineBuffer: string[] = [];
 
@@ -390,60 +392,60 @@ function parsePost(raw: string, messageId: string): acp.ContentBlock[] {
 function parseImage(raw: string, messageId: string): acp.ContentBlock[] {
   const payload = safeParse<ImagePayload>(raw);
   const key = payload?.image_key;
-  if (!key) return [{ type: "text", text: "[图片消息缺少 image_key]" }];
+  if (!key) return [{ type: "text", text: "[image message is missing image_key]" }];
   return [{ type: "text", text: imagePlaceholder(messageId, key) }];
 }
 
 function imagePlaceholder(messageId: string, imageKey: string): string {
-  return `[图片 (message_id=${messageId}, image_key=${imageKey})]`;
+  return `[Image (message_id=${messageId}, image_key=${imageKey})]`;
 }
 
 function parseFile(raw: string): acp.ContentBlock[] {
   const p = safeParse<FilePayload>(raw);
-  const name = p?.file_name ?? "未命名";
+  const name = p?.file_name ?? "unnamed";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[文件: ${name} (file_key=${key})]` }];
+  return [{ type: "text", text: `[File: ${name} (file_key=${key})]` }];
 }
 
 function parseAudio(raw: string): acp.ContentBlock[] {
   const p = safeParse<AudioPayload>(raw);
-  const dur = p?.duration ? `${p.duration}ms` : "未知时长";
+  const dur = p?.duration ? `${p.duration}ms` : "unknown duration";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[音频: ${dur} (file_key=${key})]` }];
+  return [{ type: "text", text: `[Audio: ${dur} (file_key=${key})]` }];
 }
 
 function parseMedia(raw: string): acp.ContentBlock[] {
   const p = safeParse<MediaPayload>(raw);
-  const name = p?.file_name ?? "未命名";
-  const dur = p?.duration ? `${p.duration}ms` : "未知时长";
+  const name = p?.file_name ?? "unnamed";
+  const dur = p?.duration ? `${p.duration}ms` : "unknown duration";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[视频: ${name} ${dur} (file_key=${key})]` }];
+  return [{ type: "text", text: `[Video: ${name} ${dur} (file_key=${key})]` }];
 }
 
 function parseSticker(raw: string): acp.ContentBlock[] {
   const p = safeParse<StickerPayload>(raw);
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[表情包 (file_key=${key})]` }];
+  return [{ type: "text", text: `[Sticker (file_key=${key})]` }];
 }
 
 function parseShareChat(raw: string): acp.ContentBlock[] {
   const p = safeParse<ShareChatPayload>(raw);
   const id = p?.chat_id ?? "unknown";
-  return [{ type: "text", text: `[群名片: chat_id=${id}]` }];
+  return [{ type: "text", text: `[Shared chat: chat_id=${id}]` }];
 }
 
 function parseShareUser(raw: string): acp.ContentBlock[] {
   const p = safeParse<ShareUserPayload>(raw);
   const id = p?.user_id ?? "unknown";
-  return [{ type: "text", text: `[个人名片: user_id=${id}]` }];
+  return [{ type: "text", text: `[Shared contact: user_id=${id}]` }];
 }
 
 function parseLocation(raw: string): acp.ContentBlock[] {
   const p = safeParse<LocationPayload>(raw);
-  const name = p?.name ?? "未命名地点";
+  const name = p?.name ?? "unnamed location";
   const lat = p?.latitude ?? "?";
   const lon = p?.longitude ?? "?";
-  return [{ type: "text", text: `[位置: ${name} (${lat}, ${lon})]` }];
+  return [{ type: "text", text: `[Location: ${name} (${lat}, ${lon})]` }];
 }
 
 // ---- Element renderers ----
@@ -479,7 +481,7 @@ function elementToText(el: PostElement): string {
     case "at":
       return `@{${el.user_name ?? el.user_id}}`;
     case "media":
-      return `[视频/文件: ${el.file_key ?? el.image_key ?? "unknown"}]`;
+      return `[Video/File: ${el.file_key ?? el.image_key ?? "unknown"}]`;
     case "emotion":
       return `:${el.emoji_type}:`;
     case "img":

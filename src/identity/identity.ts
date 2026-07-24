@@ -130,14 +130,14 @@ export class Identity {
     const lines: string[] =
       ctx.chatType === "group"
         ? [
-            `[上下文: 群聊 "${ctx.chatName ?? ""}" (${ctx.chatId}) 中用户 ${ctx.userName} (${ctx.userId}) 的消息]`,
+            `[Context: message from ${ctx.userName} (${ctx.userId}) in group chat "${ctx.chatName ?? ""}" (${ctx.chatId})]`,
           ]
-        : [`[上下文: 用户 ${ctx.userName} (${ctx.userId}) 的私聊消息]`];
+        : [`[Context: direct message from ${ctx.userName} (${ctx.userId})]`];
 
     lines.push(
       this.opts.policy === "user-default"
-        ? `[身份策略: user-default — 访问该用户的个人 Lark 资源时请以其身份 (open_id: ${ctx.userId}) 操作，仅在必要时回退到机器人身份]`
-        : `[身份策略: bot-only — Lark 操作以机器人（应用）身份执行]`,
+        ? `[Identity policy: user-default — act as this user (open_id: ${ctx.userId}) when accessing their personal Lark resources; fall back to the bot identity only when necessary]`
+        : `[Identity policy: bot-only — perform Lark operations as the bot (application) identity]`,
     );
     return lines.join("\n");
   }
@@ -146,6 +146,9 @@ export class Identity {
     if (this.configDirEnsured) return;
     fs.mkdirSync(this.opts.configDir, { recursive: true });
     this.configDirEnsured = true;
-    this.logger.debug({ configDir: this.opts.configDir, policy: this.opts.policy }, "identity ready");
+    this.logger.debug(
+      { configDir: this.opts.configDir, policy: this.opts.policy },
+      "identity ready",
+    );
   }
 }

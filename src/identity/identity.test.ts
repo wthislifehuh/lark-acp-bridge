@@ -102,7 +102,7 @@ describe("Identity", () => {
       userId: USER,
       userName: "Alice",
     });
-    expect(ctx).toContain("私聊");
+    expect(ctx).toContain("direct message");
     expect(ctx).toContain(USER);
     expect(ctx).toContain("bot-only");
   });
@@ -115,7 +115,7 @@ describe("Identity", () => {
       userId: USER,
       userName: "Alice",
     });
-    expect(ctx).toContain("群聊");
+    expect(ctx).toContain("group chat");
     expect(ctx).toContain("Ops");
     expect(ctx).toContain(CHAT);
   });

@@ -15,7 +15,22 @@ export type {
   LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
+  LarkToolsOptions,
 } from "./bridge/bridge.js";
+
+export {
+  LarkToolServer,
+  ToolContext,
+  AskTimeoutError,
+  registerLarkTools,
+  LARK_TOOL_NAMES,
+} from "./lark-tools/index.js";
+export type {
+  LarkToolServerOptions,
+  ToolContextOptions,
+  AskChoiceResult,
+  DownloadedResource,
+} from "./lark-tools/index.js";
 
 export type { PermissionMode } from "./acp/lark-acp-client.js";
 export { PERMISSION_MODES } from "./acp/lark-acp-client.js";

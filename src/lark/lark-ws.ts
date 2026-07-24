@@ -6,7 +6,7 @@ import type { LarkTransport } from "./transport.js";
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
 
 const CARD_ACTION_TOAST_OK = {
-  toast: { type: "success" as const, content: "已确认" },
+  toast: { type: "success" as const, content: "Received" },
 };
 
 /**

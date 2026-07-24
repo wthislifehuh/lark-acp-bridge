@@ -23,6 +23,13 @@ export interface SpawnAgentOptions {
   env?: Record<string, string>;
   client: acp.Client;
   logger: LarkLogger;
+  /**
+   * MCP servers to expose to the agent's session (e.g. the in-process Lark
+   * tool server). Injected **only** when the agent advertises HTTP MCP
+   * support (`mcpCapabilities.http`); otherwise dropped with a log line, so
+   * an agent that can't reach an HTTP MCP server still runs normally.
+   */
+  mcpServers?: acp.McpServer[];
 }
 
 interface SpawnInternal {
@@ -41,10 +48,11 @@ interface SpawnInternal {
  */
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<AgentProcess> {
   const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
+  const mcpServers = resolveMcpServers(initResult, opts);
 
   let sessionResult: acp.NewSessionResponse;
   try {
-    sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers: [] });
+    sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers });
   } catch (err) {
     throw new Error("Failed to create agent session", { cause: err });
   }
@@ -74,6 +82,7 @@ export async function spawnAndResumeAgent(
   const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
   const agentCaps = initResult.agentCapabilities;
   const caps = (agentCaps ?? {}) as Record<string, unknown>;
+  const mcpServers = resolveMcpServers(initResult, opts);
 
   const hasResume = !!agentCaps?.sessionCapabilities?.resume;
   const hasLoad = !!agentCaps?.loadSession;
@@ -86,13 +95,13 @@ export async function spawnAndResumeAgent(
         await connection.resumeSession({
           sessionId: previousSessionId,
           cwd: opts.cwd,
-          mcpServers: [],
+          mcpServers,
         });
       } else {
         await connection.loadSession({
           sessionId: previousSessionId,
           cwd: opts.cwd,
-          mcpServers: [],
+          mcpServers,
         });
       }
       opts.logger.info(
@@ -116,7 +125,7 @@ export async function spawnAndResumeAgent(
 
   let sessionResult: acp.NewSessionResponse;
   try {
-    sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers: [] });
+    sessionResult = await connection.newSession({ cwd: opts.cwd, mcpServers });
   } catch (err) {
     throw new Error("Failed to create agent session after resume failure", { cause: err });
   }
@@ -204,6 +213,27 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
   }
 
   return { proc, connection, initResult, getRecentStderr };
+}
+
+/**
+ * Gate the requested MCP servers on the agent's advertised HTTP MCP support.
+ * The Lark tool server is HTTP-only (it must run in-process — see
+ * `docs/lark-mcp-tool-server.md` §1), so an agent without `mcpCapabilities.http`
+ * gets an empty list rather than an endpoint it can't reach.
+ */
+function resolveMcpServers(
+  initResult: acp.InitializeResponse,
+  opts: SpawnAgentOptions,
+): acp.McpServer[] {
+  const requested = opts.mcpServers ?? [];
+  if (requested.length === 0) return [];
+
+  const supportsHttp = initResult.agentCapabilities?.mcpCapabilities?.http === true;
+  if (!supportsHttp) {
+    opts.logger.info("agent lacks HTTP MCP support — Lark tools not injected");
+    return [];
+  }
+  return requested;
 }
 
 export function killAgent(proc: ChildProcess): void {

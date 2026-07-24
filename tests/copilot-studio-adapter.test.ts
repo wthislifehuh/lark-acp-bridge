@@ -227,7 +227,7 @@ describe("copilot-studio-acp adapter", () => {
     expect(output).toContain("答案第一段，第二段，收尾。");
     // The typing chunks and the final message overlap — text must appear once.
     expect(output.match(/答案第一段/g)).toHaveLength(1);
-    expect(output).toContain("**建议选项**: 继续");
+    expect(output).toContain("**Suggested actions**: 继续");
     expect(fake.turns).toEqual([{ conversationId: CONVERSATION_ID, text: "帮我查订单" }]);
   });
 
