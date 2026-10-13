@@ -71,7 +71,7 @@ describe("q-acp adapter", () => {
       prompt: [{ type: "text", text: "second question XYZ" }],
     });
     const replayed = bed.lastInput();
-    expect(replayed).toContain("对话历史");
+    expect(replayed).toContain("Conversation history");
     expect(replayed).toContain("first question ABC");
     expect(replayed).toContain("Fake Q Answer");
     expect(replayed).toContain("second question XYZ");

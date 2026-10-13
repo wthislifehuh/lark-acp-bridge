@@ -1,0 +1,9 @@
+{
+  // Build/emit config: the library + bin entrypoints only. Test files
+  // (colocated `*.test.ts` and the `tests/` suite) are excluded so they
+  // never land in `dist/`. `tsconfig.json` is the broader IDE / lint /
+  // typecheck view that *does* include tests.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*", "bin/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

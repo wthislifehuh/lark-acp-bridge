@@ -1,12 +1,35 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { adaptToSdkLogger, type LarkLogger } from "../logger/logger.js";
 import { resolveLarkDomain, type LarkDomainInput } from "./domain.js";
+import type { LarkTransport } from "./transport.js";
 
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
 
 const CARD_ACTION_TOAST_OK = {
-  toast: { type: "success" as const, content: "已确认" },
+  toast: { type: "success" as const, content: "Received" },
 };
+
+/**
+ * Connection-liveness settings for an unattended deployment. These tune the
+ * SDK's built-in ping/pong watchdog and reconnect loop — the bridge doesn't
+ * run its own competing watchdog.
+ */
+export interface LarkWsKeepaliveOptions {
+  /**
+   * Seconds. Liveness watchdog window: if no inbound frame arrives within
+   * this window after a ping, the socket is presumed dead and reconnected.
+   * `0` disables it (wait for socket-level errors only).
+   */
+  readonly pingTimeoutSec?: number;
+  /**
+   * Milliseconds. Abort a WebSocket handshake that hasn't completed within
+   * this window (stuck DNS / proxy / NAT) and let the retry loop try again.
+   * `0` disables the cap.
+   */
+  readonly handshakeTimeoutMs?: number;
+  /** Reconnect automatically after a disconnect. Default `true`. */
+  readonly autoReconnect?: boolean;
+}
 
 export interface LarkWsOptions {
   appId: string;
@@ -20,6 +43,8 @@ export interface LarkWsOptions {
   logger: LarkLogger;
   onMessage: (event: Lark.RawMessageEvent) => void;
   onCardAction: (event: Lark.CardActionEvent) => void;
+  /** Connection liveness / reconnect tuning for unattended operation. */
+  keepalive?: LarkWsKeepaliveOptions;
 }
 
 /**
@@ -27,7 +52,7 @@ export interface LarkWsOptions {
  * `im.message.receive_v1` and `card.action.trigger`; ignores other events
  * to avoid noisy SDK warnings.
  */
-export class LarkWsConnection {
+export class LarkWsConnection implements LarkTransport {
   private readonly wsClient: Lark.WSClient;
   private readonly logger: LarkLogger;
   private readonly onMessage: LarkWsOptions["onMessage"];
@@ -38,13 +63,47 @@ export class LarkWsConnection {
     this.onMessage = opts.onMessage;
     this.onCardAction = opts.onCardAction;
     const sdkLogger = adaptToSdkLogger(opts.logger.child({ name: "lark-sdk" }));
+    const keepalive = opts.keepalive ?? {};
     this.wsClient = new Lark.WSClient({
       appId: opts.appId,
       appSecret: opts.appSecret,
       ...(opts.domain !== undefined ? { domain: resolveLarkDomain(opts.domain) } : {}),
       loggerLevel: LARK_LOGGER_LEVEL,
       logger: sdkLogger,
+      autoReconnect: keepalive.autoReconnect ?? true,
+      ...(keepalive.handshakeTimeoutMs !== undefined
+        ? { handshakeTimeoutMs: keepalive.handshakeTimeoutMs }
+        : {}),
+      ...(keepalive.pingTimeoutSec !== undefined
+        ? { wsConfig: { pingTimeout: keepalive.pingTimeoutSec } }
+        : {}),
+      onReady: () => {
+        this.logger.info("websocket ready");
+      },
+      onReconnecting: () => {
+        this.logger.warn(this.statusFields(), "websocket disconnected — reconnecting");
+      },
+      onReconnected: () => {
+        this.logger.info(this.statusFields(), "websocket reconnected");
+      },
+      onError: (err: Error) => {
+        this.logger.error({ err }, "websocket connection failed — will retry on next start");
+      },
     });
+  }
+
+  /** Snapshot of the WS lifecycle (state, reconnect attempts), or `null` if unavailable. */
+  getConnectionStatus(): Lark.WSConnectionStatus | null {
+    try {
+      return this.wsClient.getConnectionStatus();
+    } catch {
+      return null;
+    }
+  }
+
+  private statusFields(): { reconnectAttempts?: number } {
+    const status = this.getConnectionStatus();
+    return status ? { reconnectAttempts: status.reconnectAttempts } : {};
   }
 
   /**

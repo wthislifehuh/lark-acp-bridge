@@ -26,10 +26,10 @@ const MAX_DIFF_LINES = 50;
 const MAX_THOUGHT_CHARS = 4_000;
 const MAX_TOOL_DETAIL_CHARS = 500;
 
-const TRUNCATION_NOTICE = "…（内容过长，已截断）";
+const TRUNCATION_NOTICE = "… (content too long, truncated)";
 
-const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
-const PERMISSION_SHUTDOWN_REASON = "会话已结束，本次确认已失效";
+const PERMISSION_TIMEOUT_REASON = "No response within the time limit — automatically cancelled";
+const PERMISSION_SHUTDOWN_REASON = "The session has ended — this approval request has expired";
 
 /**
  * Thrown when the agent asks to read / write a path outside its working
@@ -55,6 +55,29 @@ interface PendingPermission {
   timer: ReturnType<typeof setTimeout> | null;
   /** Card message id, set once `sendInterruptCard` resolves. */
   cardMessageId: string | null;
+  /**
+   * Lark `open_id` of the user whose prompt triggered this permission
+   * request. Only this operator (or a privileged user) may resolve the
+   * card — see {@link LarkAcpClient.handleCardAction}.
+   */
+  operatorOpenId: string;
+}
+
+/**
+ * Outcome of routing a permission-card button click.
+ *
+ * - `resolved` — the click resolved the pending request.
+ * - `orphan` — no pending request matched (expired / already handled).
+ * - `forbidden` — the clicker isn't the originating operator (or privileged),
+ *   so the request is left pending for the rightful operator.
+ */
+export type CardActionResult = "resolved" | "orphan" | "forbidden";
+
+/** Identity of a user clicking a permission-card button. */
+export interface CardActionClicker {
+  readonly openId: string;
+  /** `true` when the clicker is an owner/admin who may resolve any card. */
+  readonly privileged: boolean;
 }
 
 export interface LarkAcpClientCallbacks {
@@ -90,7 +113,7 @@ export interface LarkAcpClientOptions {
   /** Include `tool_call` / `tool_call_update` events in the unified card. */
   showTools: boolean;
   /**
-   * Render the "中断当前任务" button at the bottom of the running card.
+   * Render the "Stop current task" button at the bottom of the running card.
    * When `false`, the only way to cancel is via a chat command.
    */
   showCancelButton: boolean;
@@ -125,6 +148,7 @@ export class LarkAcpClient implements acp.Client {
   private lastTypingAt = 0;
   private currentMessageId = "";
   private currentChatId = "";
+  private currentOperatorOpenId = "";
 
   private readonly pendingPermissions = new Map<string, PendingPermission>();
 
@@ -153,9 +177,10 @@ export class LarkAcpClient implements acp.Client {
   }
 
   /** Bind the current Lark message context so cards reply to the right message. */
-  setContext(messageId: string, chatId: string): void {
+  setContext(messageId: string, chatId: string, operatorOpenId = ""): void {
     this.currentMessageId = messageId;
     this.currentChatId = chatId;
+    this.currentOperatorOpenId = operatorOpenId;
   }
 
   // ----- Permission flow --------------------------------------------------
@@ -183,6 +208,7 @@ export class LarkAcpClient implements acp.Client {
         resolve,
         timer: null,
         cardMessageId: null,
+        operatorOpenId: this.currentOperatorOpenId,
       };
       this.pendingPermissions.set(requestId, pending);
 
@@ -230,12 +256,38 @@ export class LarkAcpClient implements acp.Client {
     return { outcome: { outcome: "selected", optionId: match.optionId } };
   }
 
-  handleCardAction(requestId: string, optionId: string): boolean {
+  /**
+   * Resolve a pending permission from a card-button click.
+   *
+   * The click is only honoured when it comes from the operator who
+   * triggered the request, or from a privileged (owner/admin) user. Any
+   * other clicker is rejected and the request stays pending — closing the
+   * §4.1 hole where any group member could approve another user's tool call.
+   */
+  handleCardAction(
+    requestId: string,
+    optionId: string,
+    clicker: CardActionClicker,
+  ): CardActionResult {
     const pp = this.pendingPermissions.get(requestId);
-    if (!pp) return false;
+    if (!pp) return "orphan";
+
+    // An empty recorded operator means the request predates operator
+    // tracking (or context was never bound); fall back to open behaviour
+    // rather than deadlocking the card.
+    const boundOperator = pp.operatorOpenId;
+    const isOperator = boundOperator === "" || clicker.openId === boundOperator;
+    if (!isOperator && !clicker.privileged) {
+      this.logger.warn(
+        { requestId, clicker: clicker.openId, operator: boundOperator },
+        "card action rejected — clicker is not the originating operator",
+      );
+      return "forbidden";
+    }
+
     this.disposePending(requestId);
     pp.resolve({ outcome: { outcome: "selected", optionId } });
-    return true;
+    return "resolved";
   }
 
   cancelPendingPermission(): void {
@@ -527,7 +579,7 @@ function truncateChars(text: string, maxChars: number): string {
 function truncateLines(lines: readonly string[], maxLines: number): string {
   if (lines.length <= maxLines) return lines.join("\n");
   const omitted = lines.length - maxLines;
-  return [...lines.slice(0, maxLines), `... (省略 ${omitted} 行)`].join("\n");
+  return [...lines.slice(0, maxLines), `... (${omitted} more lines omitted)`].join("\n");
 }
 
 /** Apply ACP's optional 1-based `line` offset and `limit` (max lines) to file content. */

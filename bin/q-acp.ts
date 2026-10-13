@@ -61,15 +61,15 @@ const AGENT_VERSION = "0.1.0";
 const WIN32_PLATFORM = "win32";
 const STDERR_TAIL_LINES = 20;
 
-const EMPTY_OUTPUT_NOTE = "_(Amazon Q 未返回任何内容)_";
-const EMPTY_PROMPT_NOTE = "_(空消息，未调用 Amazon Q)_";
+const EMPTY_OUTPUT_NOTE = "_(Amazon Q returned no content)_";
+const EMPTY_PROMPT_NOTE = "_(empty message — Amazon Q was not called)_";
 
 /** Windows cannot spawn `.cmd`/`.bat` without a shell (Node ≥18.17 EINVAL). */
 const WINDOWS_SCRIPT_BIN_PATTERN = /\.(cmd|bat)$/i;
 
 const LAUNCH_HINT =
   "is the Amazon Q CLI installed and on PATH? " +
-  "(注意：Amazon Q CLI 不支持原生 Windows，需在 WSL / Linux / macOS 内运行)";
+  "(note: the Amazon Q CLI does not support native Windows — run it inside WSL / Linux / macOS)";
 
 interface SessionState {
   cwd: string;
@@ -207,7 +207,7 @@ class QAgent implements acp.Agent {
       if (process.platform === WIN32_PLATFORM && WINDOWS_SCRIPT_BIN_PATTERN.test(this.config.bin)) {
         reject(
           new QChatError(
-            `Q_ACP_BIN 指向了 \`${this.config.bin}\`：Windows 上无法直接派生 .cmd/.bat（且 Amazon Q CLI 需在 WSL 内运行）。请改指可执行文件本体。`,
+            `Q_ACP_BIN points at \`${this.config.bin}\`: Windows cannot spawn .cmd/.bat directly (and the Amazon Q CLI must run inside WSL). Point it at the executable itself.`,
             null,
             [],
           ),
@@ -288,7 +288,7 @@ class QAgent implements acp.Agent {
         // it (isAuthenticationError) and tears the runtime down instead of
         // retrying — a `q login` is needed either way.
         const message = isQAuthFailure(stderrTail)
-          ? `Authentication required: \`${this.config.bin} login\` 后重试 (${exitDetail})`
+          ? `Authentication required: run \`${this.config.bin} login\` and retry (${exitDetail})`
           : `\`${this.config.bin} chat\` ${exitDetail}`;
         reject(new QChatError(message, code, stderrTail));
       });

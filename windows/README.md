@@ -6,17 +6,19 @@ One `.bat` per built-in agent preset — double-click instead of opening a termi
 2. Builds the project automatically on first run if `dist/` is missing (`npm run build`).
 3. Starts the bridge with that preset, and `pause`s at the end so the window doesn't vanish if it exits/crashes.
 
-| File                   | Preset         | Notes                                                                      |
-| ---------------------- | -------------- | -------------------------------------------------------------------------- |
-| `run-claude.bat`       | `claude`       | Needs `claude` CLI logged in once (`claude` in a terminal).                |
-| `run-claude-agent.bat` | `claude-agent` | Needs `ANTHROPIC_API_KEY` — warns if it's not set in the environment.      |
-| `run-codex.bat`        | `codex`        |                                                                            |
-| `run-copilot.bat`      | `copilot`      |                                                                            |
-| `run-gemini.bat`       | `gemini`       | See main README's [Connecting Gemini](../README.md#connecting-gemini).     |
-| `run-opencode.bat`     | `opencode`     | Warns if `opencode` isn't on `PATH`.                                       |
-| `run-kiro.bat`         | `kiro`         | Warns if `kiro-cli` isn't on `PATH`. Native Windows support since CLI 2.0. |
-| `run-q.bat`            | `q`            | Different shape — see below, Amazon Q only runs under WSL.                 |
-| `run-mock.bat`         | `mock`         | Scripted agent, no real model calls — good for testing your Feishu setup.  |
+| File                     | Preset           | Notes                                                                                                                                                                                            |
+| ------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run-claude.bat`         | `claude`         | Needs `claude` CLI logged in once (`claude` in a terminal).                                                                                                                                      |
+| `run-claude-agent.bat`   | `claude-agent`   | Needs `ANTHROPIC_API_KEY` — warns if it's not set in the environment.                                                                                                                            |
+| `run-codex.bat`          | `codex`          |                                                                                                                                                                                                  |
+| `run-copilot.bat`        | `copilot`        |                                                                                                                                                                                                  |
+| `run-gemini.bat`         | `gemini`         | See main README's [Connecting Gemini](../README.md#connecting-gemini).                                                                                                                           |
+| `run-opencode.bat`       | `opencode`       | Warns if `opencode` isn't on `PATH`.                                                                                                                                                             |
+| `run-kiro.bat`           | `kiro`           | Warns if `kiro-cli` isn't on `PATH`. Native Windows support since CLI 2.0.                                                                                                                       |
+| `run-q.bat`              | `q`              | Different shape — see below, Amazon Q only runs under WSL.                                                                                                                                       |
+| `run-copilot-studio.bat` | `copilot-studio` | Microsoft Copilot Studio agent. One-time Entra setup + `lark-acp-copilot-studio login` first — see [Connecting Copilot Studio](../README.md#connecting-microsoft-copilot-studio).                |
+| `run-m365-copilot.bat`   | `m365-copilot`   | Microsoft 365 Copilot (preview API; needs a Copilot license). One-time Entra setup + `lark-acp-m365 login` first — see [Connecting M365 Copilot](../README.md#connecting-microsoft-365-copilot). |
+| `run-mock.bat`           | `mock`           | Scripted agent, no real model calls — good for testing your Feishu setup.                                                                                                                        |
 
 `_prepare.bat` is shared plumbing (the build-if-missing step); it's not meant to be run directly.
 

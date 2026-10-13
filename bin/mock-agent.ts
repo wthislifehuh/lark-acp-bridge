@@ -6,11 +6,11 @@
  *
  * The scripted turn covers every surface the bridge is expected to render:
  *
- *   1. an `agent_thought_chunk` (思考) so the presenter exercises the
+ *   1. an `agent_thought_chunk` (thought) so the presenter exercises the
  *      thought timeline branch.
- *   2. a `tool_call` + `tool_call_update` pair (工具调用) that completes
+ *   2. a `tool_call` + `tool_call_update` pair (tool call) that completes
  *      without permission gating.
- *   3. a `requestPermission` call (权限许可) that blocks until the user
+ *   3. a `requestPermission` call (permission gate) that blocks until the user
  *      picks an option in the Lark interrupt card.
  *   4. one or more `agent_message_chunk` payloads carrying a fully-formed
  *      markdown document — headings, lists, fenced code, tables, links —
@@ -34,36 +34,36 @@ const TOOL_CALL_READ_ID = "mock_tool_read";
 const TOOL_CALL_EDIT_ID = "mock_tool_edit";
 
 const MOCK_THOUGHT = [
-  "用户想看一个完整的 mock 输出，那我应该依次发送：",
-  "1) 一段思考；",
-  "2) 一次无需许可的工具调用；",
-  "3) 一次需要许可的工具调用；",
-  "4) 一段带完整 Markdown 元素的回答。",
+  "The user wants to see a full mock output, so I should emit, in order:",
+  "1) a thought;",
+  "2) a tool call that needs no permission;",
+  "3) a tool call that does need permission;",
+  "4) an answer exercising every Markdown element.",
 ].join("\n");
 
 const MOCK_FILE_PATH = "/mock/project/README.md";
 const MOCK_CONFIG_PATH = "/mock/project/config.json";
 
-const MOCK_MARKDOWN_INTRO = "好的，下面是一段固定的 mock 答复：\n\n";
+const MOCK_MARKDOWN_INTRO = "Sure — here is a fixed mock reply:\n\n";
 
-const MOCK_MARKDOWN_BODY = `# Mock Agent 回答示例
+const MOCK_MARKDOWN_BODY = `# Mock Agent sample answer
 
-这是一个 **固定输出** 的 mock agent，用于演示 Lark 端的渲染效果。它会依次触发：
+This is a **fixed-output** mock agent used to demo rendering on the Lark side. It triggers, in order:
 
-- 思考（\`agent_thought_chunk\`）
-- 工具调用（\`tool_call\` / \`tool_call_update\`）
-- 权限许可（\`session/request_permission\`）
-- Markdown 富文本回答（\`agent_message_chunk\`）
+- thought (\`agent_thought_chunk\`)
+- tool call (\`tool_call\` / \`tool_call_update\`)
+- permission gate (\`session/request_permission\`)
+- Markdown rich-text answer (\`agent_message_chunk\`)
 
-## 列表
+## Lists
 
-1. 一级列表项 *斜体*
-2. 一级列表项 **粗体**
-   - 嵌套项目 \`inline code\`
-   - 嵌套项目 ~~删除线~~
-3. 链接示例：[ACP](https://agentcommunicationprotocol.dev)
+1. Top-level item *italic*
+2. Top-level item **bold**
+   - Nested item \`inline code\`
+   - Nested item ~~strikethrough~~
+3. Link example: [ACP](https://agentcommunicationprotocol.dev)
 
-## 代码
+## Code
 
 \`\`\`ts
 export function greet(name: string): string {
@@ -71,19 +71,19 @@ export function greet(name: string): string {
 }
 \`\`\`
 
-## 表格
+## Table
 
-| 字段 | 含义 | 示例 |
+| Field | Meaning | Example |
 | --- | --- | --- |
-| sessionUpdate | 事件类型 | agent_message_chunk |
-| toolCallId | 工具调用 ID | mock_tool_read |
-| status | 工具状态 | completed |
+| sessionUpdate | Event type | agent_message_chunk |
+| toolCallId | Tool call ID | mock_tool_read |
+| status | Tool status | completed |
 
-> 这是一段引用，用来演示 blockquote 渲染。
+> This is a blockquote, used to demo blockquote rendering.
 
 ---
 
-回答结束。`;
+End of answer.`;
 
 interface SessionState {
   pendingPrompt: AbortController | null;
@@ -175,7 +175,10 @@ class MockAgent implements acp.Agent {
       output: "# Mock Project\n\nThis is a mocked README content.",
     });
 
-    await this.emitMessage(sessionId, "我先看了一下项目说明，接下来需要修改一个配置文件。\n\n");
+    await this.emitMessage(
+      sessionId,
+      "I read the project README first; next I need to modify a config file.\n\n",
+    );
     await sleep(MOCK_TURN_DELAY_MS, signal);
 
     await this.emitToolCall(sessionId, {
@@ -197,8 +200,8 @@ class MockAgent implements acp.Agent {
         rawInput: { path: MOCK_CONFIG_PATH, content: '{"mocked": true}' },
       },
       options: [
-        { kind: "allow_once", name: "允许这次修改", optionId: PERMISSION_OPTION_ALLOW },
-        { kind: "reject_once", name: "跳过这次修改", optionId: PERMISSION_OPTION_REJECT },
+        { kind: "allow_once", name: "Allow this edit", optionId: PERMISSION_OPTION_ALLOW },
+        { kind: "reject_once", name: "Skip this edit", optionId: PERMISSION_OPTION_REJECT },
       ],
     });
 
@@ -227,7 +230,7 @@ class MockAgent implements acp.Agent {
     await sleep(MOCK_TURN_DELAY_MS, signal);
     await this.emitMessage(
       sessionId,
-      "好的，已跳过这次修改。如果需要重新尝试，请再次发送消息触发 mock turn。",
+      "OK, the edit was skipped. Send another message to trigger the mock turn again.",
     );
   }
 
@@ -342,7 +345,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 function main(): void {
-  // ACP 通过 stdio 通信：客户端写入到 agent 的 stdin，agent 把响应写到 stdout。
+  // ACP speaks over stdio: the client writes to the agent's stdin and the
+  // agent writes its responses to stdout.
   const input = Writable.toWeb(process.stdout);
   const output = Readable.toWeb(process.stdin);
   const stream = acp.ndJsonStream(input, output);

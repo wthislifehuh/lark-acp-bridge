@@ -9,7 +9,6 @@
 
 import path from "node:path";
 import os from "node:os";
-import type * as acp from "@agentclientprotocol/sdk";
 
 export const DEFAULT_Q_BIN = "q";
 export const DEFAULT_WRAP = "never";
@@ -24,10 +23,11 @@ export const DEFAULT_MAX_HISTORY_CHARS = 24_000;
 export const SESSION_FILE_VERSION = 1 as const;
 export const SESSION_FILE_EXT = ".json";
 
-export const HISTORY_HEADER = "=== 对话历史（仅供上下文参考，请勿重复回答历史中的旧问题）===";
-export const CURRENT_HEADER = "=== 当前请求 ===";
+export const HISTORY_HEADER =
+  "=== Conversation history (context only — do not re-answer old questions from it) ===";
+export const CURRENT_HEADER = "=== Current request ===";
 
-export const ROLE_LABELS = { user: "用户", assistant: "助手" } as const;
+export const ROLE_LABELS = { user: "User", assistant: "Assistant" } as const;
 
 export type Role = keyof typeof ROLE_LABELS;
 
@@ -91,20 +91,9 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_CSI_PATTERN, "");
 }
 
-/** Flatten an ACP prompt into a single plain-text string for `q`. */
-export function flattenPrompt(blocks: readonly acp.ContentBlock[]): string {
-  const parts: string[] = [];
-  for (const block of blocks) {
-    if (block.type === "text") {
-      parts.push(block.text);
-      continue;
-    }
-    // The Lark interpreter only ever emits text blocks (it lowers images /
-    // files / etc. into text placeholders), so this is a defensive fallback.
-    parts.push(`[${block.type} 内容已省略]`);
-  }
-  return parts.join("\n").trim();
-}
+// Moved to ./prompt-text.ts (now shared by all bundled adapters); re-exported
+// here so existing imports keep working.
+export { flattenPrompt } from "./prompt-text.js";
 
 /**
  * Compose the string handed to `q chat`: prior turns as reference context

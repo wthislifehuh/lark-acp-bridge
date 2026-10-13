@@ -123,13 +123,36 @@ interface LocationPayload {
 // ---- Public API ----
 
 /**
+ * Target of an `/invite` / `/remove` access command.
+ *
+ * `openIds` are the non-bot mention targets carried by the message; the
+ * interpreter surfaces them from `message.mentions` so the bridge doesn't
+ * have to re-parse the raw event.
+ */
+export type AccessCommandTarget =
+  | { readonly type: "user"; readonly openIds: readonly string[] }
+  | { readonly type: "admin"; readonly openIds: readonly string[] }
+  | { readonly type: "group" };
+
+/**
  * High-level commands a user can issue via plain-text messages.
  *
- * Detection is intentionally strict: only exact, whitespace-trimmed matches
- * after stripping the bot's own self-mention. Anything else falls through
- * to {@link InterpretedMessage} `kind: "prompt"`.
+ * Detection is intentionally strict: session commands (`cancel` / `new`)
+ * only match exact, whitespace-trimmed text; access commands match a
+ * leading `/invite` `/remove` `/access` `/mention` token. Anything else
+ * falls through to {@link InterpretedMessage} `kind: "prompt"`.
  */
-export type LarkCommand = { readonly kind: "cancel" } | { readonly kind: "new" };
+export type LarkCommand =
+  | { readonly kind: "cancel" }
+  | { readonly kind: "new" }
+  | { readonly kind: "help" }
+  | { readonly kind: "status" }
+  | { readonly kind: "config" }
+  | { readonly kind: "access-show" }
+  | { readonly kind: "access-usage"; readonly usage: string }
+  | { readonly kind: "mention-toggle"; readonly enabled: boolean }
+  | { readonly kind: "invite"; readonly target: AccessCommandTarget }
+  | { readonly kind: "remove"; readonly target: AccessCommandTarget };
 
 /**
  * Outcome of interpreting a Lark inbound message.
@@ -154,6 +177,9 @@ export interface InterpretOptions {
 
 const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", "取消", "停止"]);
 const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
+const HELP_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/help", "帮助"]);
+const STATUS_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/status", "状态"]);
+const CONFIG_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/config", "配置"]);
 
 /**
  * Interpret a Lark inbound message event.
@@ -175,7 +201,7 @@ export function interpretLarkMessage(
   if (message.message_type === "text") {
     const text = extractTextContent(message.content, message.mentions, opts.botOpenId);
     if (!text) return { kind: "empty" };
-    const command = detectCommand(text);
+    const command = detectCommand(text, message.mentions, opts.botOpenId);
     if (command) return { kind: "command", command };
     return { kind: "prompt", blocks: [{ type: "text", text }] };
   }
@@ -204,9 +230,11 @@ function parseNonTextMessage(message: Lark.RawMessageEvent["message"]): acp.Cont
     case "location":
       return parseLocation(message.content);
     case "merge_forward":
-      return [{ type: "text", text: "[合并转发消息 — 请通过工具调用获取子消息]" }];
+      return [
+        { type: "text", text: "[merged forward message — use a tool call to fetch the children]" },
+      ];
     default:
-      return [{ type: "text", text: `[${message.message_type} 消息 — 暂不支持]` }];
+      return [{ type: "text", text: `[${message.message_type} message — not supported yet]` }];
   }
 }
 
@@ -214,10 +242,75 @@ function blocksToPrompt(blocks: acp.ContentBlock[]): InterpretedMessage {
   return blocks.length ? { kind: "prompt", blocks } : { kind: "empty" };
 }
 
-function detectCommand(text: string): LarkCommand | null {
+const INVITE_USAGE =
+  "Usage: /invite user @user... | /invite admin @user... | /invite group (current group)";
+const REMOVE_USAGE =
+  "Usage: /remove user @user... | /remove admin @user... | /remove group (current group)";
+const MENTION_USAGE = "Usage: /mention on | /mention off";
+
+function detectCommand(
+  text: string,
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): LarkCommand | null {
   if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
   if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
-  return null;
+  if (HELP_COMMAND_TOKENS.has(text)) return { kind: "help" };
+  if (STATUS_COMMAND_TOKENS.has(text)) return { kind: "status" };
+  if (CONFIG_COMMAND_TOKENS.has(text)) return { kind: "config" };
+
+  const tokens = text.split(/\s+/).filter((t) => t.length > 0);
+  const head = tokens[0]?.toLowerCase();
+  if (!head?.startsWith("/")) return null;
+
+  switch (head) {
+    case "/access":
+      return { kind: "access-show" };
+    case "/mention": {
+      const arg = tokens[1]?.toLowerCase();
+      if (arg === "on") return { kind: "mention-toggle", enabled: true };
+      if (arg === "off") return { kind: "mention-toggle", enabled: false };
+      return { kind: "access-usage", usage: MENTION_USAGE };
+    }
+    case "/invite":
+    case "/remove": {
+      const target = parseAccessTarget(tokens[1]?.toLowerCase(), mentions, botOpenId);
+      if (!target) {
+        return { kind: "access-usage", usage: head === "/invite" ? INVITE_USAGE : REMOVE_USAGE };
+      }
+      return head === "/invite" ? { kind: "invite", target } : { kind: "remove", target };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Build an {@link AccessCommandTarget} from a subcommand token + message mentions. */
+function parseAccessTarget(
+  sub: string | undefined,
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): AccessCommandTarget | null {
+  if (sub === "group") return { type: "group" };
+  if (sub !== "user" && sub !== "admin") return null;
+  const openIds = collectMentionTargets(mentions, botOpenId);
+  if (openIds.length === 0) return null;
+  return { type: sub, openIds };
+}
+
+/** Non-bot mention `open_id`s, de-duplicated, in first-seen order. */
+function collectMentionTargets(
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): readonly string[] {
+  if (!mentions) return [];
+  const seen = new Set<string>();
+  for (const m of mentions) {
+    const openId = m.id.open_id;
+    if (!openId || openId === botOpenId) continue;
+    seen.add(openId);
+  }
+  return [...seen];
 }
 
 // ---- Private parsers ----
@@ -249,7 +342,7 @@ function extractTextContent(
 
 function parsePost(raw: string, messageId: string): acp.ContentBlock[] {
   const payload = safeParse<PostPayload>(raw);
-  if (!payload) return [{ type: "text", text: "[富文本消息解析失败]" }];
+  if (!payload) return [{ type: "text", text: "[failed to parse rich-text message]" }];
 
   const lineBuffer: string[] = [];
 
@@ -299,60 +392,60 @@ function parsePost(raw: string, messageId: string): acp.ContentBlock[] {
 function parseImage(raw: string, messageId: string): acp.ContentBlock[] {
   const payload = safeParse<ImagePayload>(raw);
   const key = payload?.image_key;
-  if (!key) return [{ type: "text", text: "[图片消息缺少 image_key]" }];
+  if (!key) return [{ type: "text", text: "[image message is missing image_key]" }];
   return [{ type: "text", text: imagePlaceholder(messageId, key) }];
 }
 
 function imagePlaceholder(messageId: string, imageKey: string): string {
-  return `[图片 (message_id=${messageId}, image_key=${imageKey})]`;
+  return `[Image (message_id=${messageId}, image_key=${imageKey})]`;
 }
 
 function parseFile(raw: string): acp.ContentBlock[] {
   const p = safeParse<FilePayload>(raw);
-  const name = p?.file_name ?? "未命名";
+  const name = p?.file_name ?? "unnamed";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[文件: ${name} (file_key=${key})]` }];
+  return [{ type: "text", text: `[File: ${name} (file_key=${key})]` }];
 }
 
 function parseAudio(raw: string): acp.ContentBlock[] {
   const p = safeParse<AudioPayload>(raw);
-  const dur = p?.duration ? `${p.duration}ms` : "未知时长";
+  const dur = p?.duration ? `${p.duration}ms` : "unknown duration";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[音频: ${dur} (file_key=${key})]` }];
+  return [{ type: "text", text: `[Audio: ${dur} (file_key=${key})]` }];
 }
 
 function parseMedia(raw: string): acp.ContentBlock[] {
   const p = safeParse<MediaPayload>(raw);
-  const name = p?.file_name ?? "未命名";
-  const dur = p?.duration ? `${p.duration}ms` : "未知时长";
+  const name = p?.file_name ?? "unnamed";
+  const dur = p?.duration ? `${p.duration}ms` : "unknown duration";
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[视频: ${name} ${dur} (file_key=${key})]` }];
+  return [{ type: "text", text: `[Video: ${name} ${dur} (file_key=${key})]` }];
 }
 
 function parseSticker(raw: string): acp.ContentBlock[] {
   const p = safeParse<StickerPayload>(raw);
   const key = p?.file_key ?? "unknown";
-  return [{ type: "text", text: `[表情包 (file_key=${key})]` }];
+  return [{ type: "text", text: `[Sticker (file_key=${key})]` }];
 }
 
 function parseShareChat(raw: string): acp.ContentBlock[] {
   const p = safeParse<ShareChatPayload>(raw);
   const id = p?.chat_id ?? "unknown";
-  return [{ type: "text", text: `[群名片: chat_id=${id}]` }];
+  return [{ type: "text", text: `[Shared chat: chat_id=${id}]` }];
 }
 
 function parseShareUser(raw: string): acp.ContentBlock[] {
   const p = safeParse<ShareUserPayload>(raw);
   const id = p?.user_id ?? "unknown";
-  return [{ type: "text", text: `[个人名片: user_id=${id}]` }];
+  return [{ type: "text", text: `[Shared contact: user_id=${id}]` }];
 }
 
 function parseLocation(raw: string): acp.ContentBlock[] {
   const p = safeParse<LocationPayload>(raw);
-  const name = p?.name ?? "未命名地点";
+  const name = p?.name ?? "unnamed location";
   const lat = p?.latitude ?? "?";
   const lon = p?.longitude ?? "?";
-  return [{ type: "text", text: `[位置: ${name} (${lat}, ${lon})]` }];
+  return [{ type: "text", text: `[Location: ${name} (${lat}, ${lon})]` }];
 }
 
 // ---- Element renderers ----
@@ -388,7 +481,7 @@ function elementToText(el: PostElement): string {
     case "at":
       return `@{${el.user_name ?? el.user_id}}`;
     case "media":
-      return `[视频/文件: ${el.file_key ?? el.image_key ?? "unknown"}]`;
+      return `[Video/File: ${el.file_key ?? el.image_key ?? "unknown"}]`;
     case "emotion":
       return `:${el.emoji_type}:`;
     case "img":
