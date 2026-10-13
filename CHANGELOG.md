@@ -5,6 +5,8 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 Phase 1 — harden the self-hostable, org-wide assistant (see
 `docs/architecture-and-scaling-plan.md`).
 

@@ -1,6 +1,6 @@
 {
   "name": "lark-acp-bridge",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Bridge Feishu/Lark to any ACP-compatible AI agent (Claude Code, Kiro, Gemini, Amazon Q, ...)",
   "type": "module",
   "files": [
